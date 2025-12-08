@@ -2,7 +2,7 @@
 Miscellaneous utilities for MNPBEM.
 """
 
-from .units import eV2nm, nm2eV, HARTREE, TUNIT
+from .units import eV2nm, nm2eV, HARTREE, TUNIT, SPEED_OF_LIGHT
 from .options import BEMOptions, bemoptions, getbemoptions
 from .helpers import inner, outer, matcross, matmul, spdiag, vecnorm, vecnormalize
 from .plotting import (
@@ -14,6 +14,11 @@ from .geometry import (
     nearest_face, project_to_surface, surface_distance,
     gap_distance, compute_solid_angle, mesh_quality
 )
+from .meshfield import MeshField, meshfield, interpolate_field, field_at_points
+from .arrays import (
+    ValArray, VecArray, valarray, vecarray,
+    igrid, meshgrid3d, linspace_grid, sphere_grid, cylinder_grid
+)
 
 __all__ = [
     # Units
@@ -21,6 +26,7 @@ __all__ = [
     "nm2eV",
     "HARTREE",
     "TUNIT",
+    "SPEED_OF_LIGHT",
     # Options
     "BEMOptions",
     "bemoptions",
@@ -50,4 +56,20 @@ __all__ = [
     "gap_distance",
     "compute_solid_angle",
     "mesh_quality",
+    # Mesh field
+    "MeshField",
+    "meshfield",
+    "interpolate_field",
+    "field_at_points",
+    # Arrays
+    "ValArray",
+    "VecArray",
+    "valarray",
+    "vecarray",
+    # Grids
+    "igrid",
+    "meshgrid3d",
+    "linspace_grid",
+    "sphere_grid",
+    "cylinder_grid",
 ]

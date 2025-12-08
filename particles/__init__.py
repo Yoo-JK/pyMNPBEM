@@ -7,6 +7,8 @@ This module provides classes for defining particle geometries:
 - Compound: Base class for compound particles
 - ComParticle: Compound of particles with dielectric functions
 - ComPoint: Compound of points with dielectric functions
+- ComParticleMirror: Particles with mirror symmetry
+- CompStructMirror: Structures with mirror symmetry
 """
 
 from .particle import Particle
@@ -16,6 +18,7 @@ from .comparticle import ComParticle
 from .compoint import ComPoint
 from .compstruct import CompStruct
 from .layer_structure import LayerStructure
+from .comparticle_mirror import ComParticleMirror, CompStructMirror
 
 __all__ = [
     "Particle",
@@ -25,4 +28,6 @@ __all__ = [
     "ComPoint",
     "CompStruct",
     "LayerStructure",
+    "ComParticleMirror",
+    "CompStructMirror",
 ]
