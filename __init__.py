@@ -5,6 +5,18 @@ A Python library for simulating the optical properties of metallic nanoparticles
 using the boundary element method (BEM).
 
 This is a Python port of the original MATLAB MNPBEM toolbox.
+
+Modules:
+--------
+- material: Dielectric functions (constant, Drude, tabulated)
+- particles: Particle geometry classes
+- particles.shapes: Shape generation functions
+- greenfun: Green function classes (quasistatic and retarded)
+- bem: BEM solvers (quasistatic and retarded)
+- simulation: Excitation and spectrum classes
+- mie: Mie theory for spheres and ellipsoids
+- mesh2d: 2D mesh generation utilities
+- misc: Options, units, plotting utilities
 """
 
 __version__ = "1.0.0"
@@ -20,19 +32,37 @@ from .material import EpsConst, EpsDrude, EpsTable, EpsFun
 from .particles import Particle, Compound, ComParticle, ComPoint
 
 # Particle shapes
-from .particles.shapes import trisphere, tricube, trirod, tritorus
+from .particles.shapes import (
+    trisphere, tricube, trirod, tritorus,
+    triellipsoid, tricone, trinanodisk, triplate, tribiconical,
+    tricylinder, triprism
+)
 
 # Green functions
-from .greenfun import GreenStat, CompGreenStat
+from .greenfun import GreenStat, CompGreenStat, GreenRet, CompGreenRet
 
 # BEM solvers
-from .bem import BEMStat, bemsolver
+from .bem import BEMStat, BEMRet, bemsolver
 
 # Simulation classes
-from .simulation import PlaneWaveStat, DipoleStat, SpectrumStat, planewave, dipole
+from .simulation import (
+    PlaneWaveStat, DipoleStat, SpectrumStat, planewave, dipole,
+    PlaneWaveStatLayer, PlaneWaveStatMirror, planewave_layer,
+    DipoleStatLayer, DipoleStatMirror, dipole_layer,
+    EELSStat, eels
+)
 
 # Mie theory
-from .mie import MieStat, MieRet, miesolver
+from .mie import MieStat, MieRet, MieGans, miesolver
+
+# Mesh2d module
+from . import mesh2d
+
+# Visualization utilities
+from .misc.plotting import (
+    plot_particle, plot_spectrum, plot_field_slice,
+    arrow_plot, plot_eels_map, create_colormap
+)
 
 __all__ = [
     # Version
@@ -58,11 +88,21 @@ __all__ = [
     "tricube",
     "trirod",
     "tritorus",
+    "triellipsoid",
+    "tricone",
+    "trinanodisk",
+    "triplate",
+    "tribiconical",
+    "tricylinder",
+    "triprism",
     # Green functions
     "GreenStat",
     "CompGreenStat",
+    "GreenRet",
+    "CompGreenRet",
     # BEM
     "BEMStat",
+    "BEMRet",
     "bemsolver",
     # Simulation
     "PlaneWaveStat",
@@ -70,8 +110,26 @@ __all__ = [
     "SpectrumStat",
     "planewave",
     "dipole",
+    "PlaneWaveStatLayer",
+    "PlaneWaveStatMirror",
+    "planewave_layer",
+    "DipoleStatLayer",
+    "DipoleStatMirror",
+    "dipole_layer",
+    "EELSStat",
+    "eels",
     # Mie
     "MieStat",
     "MieRet",
+    "MieGans",
     "miesolver",
+    # Mesh2d
+    "mesh2d",
+    # Visualization
+    "plot_particle",
+    "plot_spectrum",
+    "plot_field_slice",
+    "arrow_plot",
+    "plot_eels_map",
+    "create_colormap",
 ]
