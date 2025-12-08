@@ -767,6 +767,242 @@ class Particle:
 
         return ax
 
+    def flip(self) -> 'Particle':
+        """
+        Flip normal vectors by reversing face vertex order.
+
+        Returns
+        -------
+        Particle
+            Particle with flipped normals.
+        """
+        new_faces = self.faces.copy()
+
+        for i in range(len(new_faces)):
+            valid = ~np.isnan(new_faces[i])
+            indices = new_faces[i][valid]
+            # Reverse order (keeping same shape)
+            new_faces[i][valid] = indices[::-1]
+
+        p = Particle(self.verts.copy(), new_faces, self.interp)
+        return p
+
+    def clean(self, tol: float = 1e-10) -> 'Particle':
+        """
+        Clean mesh by removing duplicate vertices and degenerate faces.
+
+        Parameters
+        ----------
+        tol : float
+            Tolerance for identifying duplicate vertices.
+
+        Returns
+        -------
+        Particle
+            Cleaned particle.
+        """
+        from scipy.spatial import cKDTree
+
+        # Find unique vertices
+        tree = cKDTree(self.verts)
+        pairs = tree.query_pairs(tol)
+
+        # Build mapping from old to new indices
+        mapping = np.arange(self.n_verts)
+        for i, j in pairs:
+            # Map higher index to lower
+            if i < j:
+                mapping[j] = i
+            else:
+                mapping[i] = j
+
+        # Compress mapping to contiguous indices
+        unique_verts, inverse = np.unique(mapping, return_inverse=True)
+        new_mapping = inverse
+
+        # Apply mapping to faces
+        new_faces = self.faces.copy()
+        valid = ~np.isnan(new_faces)
+        new_faces[valid] = new_mapping[new_faces[valid].astype(int)]
+
+        # Remove degenerate faces (faces with repeated vertices)
+        good_faces = []
+        for face in new_faces:
+            valid_mask = ~np.isnan(face)
+            indices = face[valid_mask].astype(int)
+            if len(np.unique(indices)) == len(indices):
+                good_faces.append(face)
+
+        if len(good_faces) == 0:
+            return Particle()
+
+        new_faces = np.array(good_faces)
+        new_verts = self.verts[unique_verts]
+
+        return Particle(new_verts, new_faces, self.interp)
+
+    def shift(self, offset: np.ndarray) -> 'Particle':
+        """
+        Shift particle by offset vector.
+
+        Parameters
+        ----------
+        offset : array_like
+            Translation vector (3,).
+
+        Returns
+        -------
+        Particle
+            Shifted particle.
+        """
+        offset = np.asarray(offset)
+        new_verts = self.verts + offset
+        return Particle(new_verts, self.faces.copy(), self.interp)
+
+    def scale(self, factor: Union[float, np.ndarray]) -> 'Particle':
+        """
+        Scale particle by factor.
+
+        Parameters
+        ----------
+        factor : float or array_like
+            Scale factor (scalar or (3,) for anisotropic).
+
+        Returns
+        -------
+        Particle
+            Scaled particle.
+        """
+        factor = np.asarray(factor)
+        new_verts = self.verts * factor
+        return Particle(new_verts, self.faces.copy(), self.interp)
+
+    def rotate(self, axis: np.ndarray, angle: float) -> 'Particle':
+        """
+        Rotate particle around axis by angle.
+
+        Parameters
+        ----------
+        axis : array_like
+            Rotation axis (3,).
+        angle : float
+            Rotation angle in radians.
+
+        Returns
+        -------
+        Particle
+            Rotated particle.
+        """
+        from scipy.spatial.transform import Rotation
+
+        axis = np.asarray(axis, dtype=float)
+        axis = axis / np.linalg.norm(axis)
+
+        rot = Rotation.from_rotvec(angle * axis)
+        new_verts = rot.apply(self.verts)
+
+        return Particle(new_verts, self.faces.copy(), self.interp)
+
+    def centroid(self) -> np.ndarray:
+        """
+        Compute centroid of particle.
+
+        Returns
+        -------
+        ndarray
+            Centroid position (3,).
+        """
+        # Weighted by face area
+        return np.sum(self.pos * self.area[:, np.newaxis], axis=0) / np.sum(self.area)
+
+    def center(self) -> 'Particle':
+        """
+        Center particle at origin.
+
+        Returns
+        -------
+        Particle
+            Centered particle.
+        """
+        c = self.centroid()
+        return self.shift(-c)
+
+    def volume(self) -> float:
+        """
+        Compute volume enclosed by particle surface.
+
+        Uses divergence theorem: V = (1/3) * integral(r . n dA)
+
+        Returns
+        -------
+        float
+            Volume in nm^3.
+        """
+        # V = (1/3) * sum(pos . nvec * area)
+        return np.abs(np.sum(np.sum(self.pos * self.nvec, axis=1) * self.area) / 3)
+
+    def surface_area(self) -> float:
+        """
+        Compute total surface area.
+
+        Returns
+        -------
+        float
+            Surface area in nm^2.
+        """
+        return np.sum(self.area)
+
+    def bounding_box(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute bounding box.
+
+        Returns
+        -------
+        min_coords : ndarray
+            Minimum coordinates (3,).
+        max_coords : ndarray
+            Maximum coordinates (3,).
+        """
+        return np.min(self.verts, axis=0), np.max(self.verts, axis=0)
+
+    def diameter(self) -> float:
+        """
+        Compute approximate diameter (max extent).
+
+        Returns
+        -------
+        float
+            Diameter in nm.
+        """
+        min_c, max_c = self.bounding_box()
+        return np.max(max_c - min_c)
+
+    @staticmethod
+    def vertcat(*particles) -> 'Particle':
+        """
+        Vertically concatenate multiple particles.
+
+        Parameters
+        ----------
+        *particles : Particle
+            Particles to concatenate.
+
+        Returns
+        -------
+        Particle
+            Combined particle.
+        """
+        if len(particles) == 0:
+            return Particle()
+        if len(particles) == 1:
+            return particles[0]
+
+        result = particles[0]
+        for p in particles[1:]:
+            result = result + p
+
+        return result
+
     def __add__(self, other: 'Particle') -> 'Particle':
         """Concatenate two particles."""
         if self.n_faces == 0:
