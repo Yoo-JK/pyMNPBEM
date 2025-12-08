@@ -5,6 +5,7 @@ Factory functions for BEM solvers.
 from typing import Optional, Union
 
 from .bem_stat import BEMStat
+from .bem_ret import BEMRet
 from ..particles import ComParticle
 from ..misc.options import BEMOptions
 
@@ -14,7 +15,7 @@ def bemsolver(
     options: Optional[Union[BEMOptions, dict]] = None,
     enei: Optional[float] = None,
     **kwargs
-) -> BEMStat:
+) -> Union[BEMStat, BEMRet]:
     """
     Factory function to create appropriate BEM solver.
 
@@ -27,8 +28,8 @@ def bemsolver(
         Compound particle.
     options : BEMOptions or dict, optional
         Simulation options. Key option is 'sim':
-        - 'stat': Quasistatic solver (BEMStat)
-        - 'ret': Retarded solver (not yet implemented)
+        - 'stat': Quasistatic solver (BEMStat) - for small particles
+        - 'ret': Retarded solver (BEMRet) - for larger particles
     enei : float, optional
         Wavelength for precomputation.
     **kwargs : dict
@@ -36,7 +37,7 @@ def bemsolver(
 
     Returns
     -------
-    BEMStat
+    BEMStat or BEMRet
         BEM solver instance.
 
     Examples
@@ -44,6 +45,10 @@ def bemsolver(
     >>> from mnpbem import bemoptions, bemsolver, ComParticle
     >>> op = bemoptions(sim='stat')
     >>> bem = bemsolver(p, op)
+    >>>
+    >>> # For larger particles, use retarded solver
+    >>> op_ret = bemoptions(sim='ret')
+    >>> bem_ret = bemsolver(p, op_ret)
     """
     # Handle options
     if options is None:
@@ -65,9 +70,6 @@ def bemsolver(
     if sim == 'stat':
         return BEMStat(p, enei=enei, **all_options)
     elif sim == 'ret':
-        # TODO: Implement retarded solver
-        raise NotImplementedError(
-            "Retarded BEM solver not yet implemented. Use sim='stat'."
-        )
+        return BEMRet(p, enei=enei, **all_options)
     else:
-        raise ValueError(f"Unknown simulation type: {sim}")
+        raise ValueError(f"Unknown simulation type: {sim}. Use 'stat' or 'ret'.")

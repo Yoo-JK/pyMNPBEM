@@ -438,6 +438,335 @@ class Particle:
 
         return curv
 
+    def edges(self) -> np.ndarray:
+        """
+        Extract all edges from the mesh.
+
+        Returns
+        -------
+        ndarray
+            Edge list, shape (n_edges, 2). Each row contains two vertex indices.
+        """
+        edges = set()
+
+        for face in self.faces:
+            valid = ~np.isnan(face)
+            indices = face[valid].astype(int)
+            n = len(indices)
+
+            for j in range(n):
+                v1, v2 = indices[j], indices[(j + 1) % n]
+                edge = tuple(sorted([v1, v2]))
+                edges.add(edge)
+
+        return np.array(list(edges))
+
+    def border(self) -> np.ndarray:
+        """
+        Find boundary edges (edges that belong to only one face).
+
+        Returns
+        -------
+        ndarray
+            Boundary edge list, shape (n_boundary_edges, 2).
+        """
+        from collections import Counter
+
+        edge_count = Counter()
+
+        for face in self.faces:
+            valid = ~np.isnan(face)
+            indices = face[valid].astype(int)
+            n = len(indices)
+
+            for j in range(n):
+                v1, v2 = indices[j], indices[(j + 1) % n]
+                edge = tuple(sorted([v1, v2]))
+                edge_count[edge] += 1
+
+        # Boundary edges have count == 1
+        boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
+
+        return np.array(boundary_edges) if boundary_edges else np.array([]).reshape(0, 2)
+
+    def quad(self, order: int = 3) -> QuadFace:
+        """
+        Get quadrature rules for face integration.
+
+        Parameters
+        ----------
+        order : int
+            Quadrature order (number of points).
+
+        Returns
+        -------
+        QuadFace
+            Quadrature points and weights.
+        """
+        # Gaussian quadrature for triangles
+        if order == 1:
+            # Centroid rule
+            points = np.array([[1/3, 1/3, 1/3]])
+            weights = np.array([1.0])
+        elif order == 3:
+            # 3-point rule
+            points = np.array([
+                [0.5, 0.5, 0.0],
+                [0.5, 0.0, 0.5],
+                [0.0, 0.5, 0.5]
+            ])
+            weights = np.array([1/3, 1/3, 1/3])
+        elif order == 4:
+            # 4-point rule
+            points = np.array([
+                [1/3, 1/3, 1/3],
+                [0.6, 0.2, 0.2],
+                [0.2, 0.6, 0.2],
+                [0.2, 0.2, 0.6]
+            ])
+            weights = np.array([-27/48, 25/48, 25/48, 25/48])
+        else:
+            # Default to 7-point rule
+            points = np.array([
+                [1/3, 1/3, 1/3],
+                [0.059715871789770, 0.470142064105115, 0.470142064105115],
+                [0.470142064105115, 0.059715871789770, 0.470142064105115],
+                [0.470142064105115, 0.470142064105115, 0.059715871789770],
+                [0.797426985353087, 0.101286507323456, 0.101286507323456],
+                [0.101286507323456, 0.797426985353087, 0.101286507323456],
+                [0.101286507323456, 0.101286507323456, 0.797426985353087]
+            ])
+            weights = np.array([0.225, 0.132394152788506, 0.132394152788506,
+                               0.132394152788506, 0.125939180544827, 0.125939180544827,
+                               0.125939180544827])
+
+        return QuadFace(points=points, weights=weights)
+
+    def quadpol(self, face_idx: int, order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get quadrature points and weights for a specific face.
+
+        Parameters
+        ----------
+        face_idx : int
+            Face index.
+        order : int
+            Quadrature order.
+
+        Returns
+        -------
+        points : ndarray
+            Quadrature points in 3D space, shape (n_pts, 3).
+        weights : ndarray
+            Quadrature weights multiplied by face area.
+        """
+        quad = self.quad(order)
+        face = self.faces[face_idx]
+        valid = ~np.isnan(face)
+        indices = face[valid].astype(int)
+        vertices = self.verts[indices]
+
+        if len(indices) == 3:
+            # Triangle: barycentric interpolation
+            points = quad.points @ vertices
+            weights = quad.weights * self.area[face_idx]
+        else:
+            # Quadrilateral: bilinear interpolation
+            # Split into two triangles
+            v0, v1, v2, v3 = vertices
+            tri1 = np.array([v0, v1, v2])
+            tri2 = np.array([v0, v2, v3])
+
+            pts1 = quad.points @ tri1
+            pts2 = quad.points @ tri2
+
+            points = np.vstack([pts1, pts2])
+            weights = np.concatenate([quad.weights, quad.weights]) * self.area[face_idx] / 2
+
+        return points, weights
+
+    def totriangles(self) -> 'Particle':
+        """
+        Convert all quadrilateral faces to triangles.
+
+        Returns
+        -------
+        Particle
+            Particle with only triangular faces.
+        """
+        new_faces = []
+
+        for face in self.faces:
+            valid = ~np.isnan(face)
+            indices = face[valid].astype(int)
+
+            if len(indices) == 3:
+                new_faces.append(indices)
+            elif len(indices) == 4:
+                # Split quad into two triangles
+                new_faces.append([indices[0], indices[1], indices[2]])
+                new_faces.append([indices[0], indices[2], indices[3]])
+
+        new_faces = np.array(new_faces)
+        return Particle(self.verts.copy(), new_faces, self.interp)
+
+    def index34(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get separate indices for triangular and quadrilateral faces.
+
+        Returns
+        -------
+        tri_idx : ndarray
+            Indices of triangular faces.
+        quad_idx : ndarray
+            Indices of quadrilateral faces.
+        """
+        is_tri = self.is_triangle()
+        tri_idx = np.where(is_tri)[0]
+        quad_idx = np.where(~is_tri)[0]
+        return tri_idx, quad_idx
+
+    def select(self, face_indices: np.ndarray) -> 'Particle':
+        """
+        Select a subset of faces.
+
+        Parameters
+        ----------
+        face_indices : ndarray
+            Indices of faces to keep.
+
+        Returns
+        -------
+        Particle
+            New particle with selected faces.
+        """
+        face_indices = np.asarray(face_indices)
+        new_faces = self.faces[face_indices]
+
+        # Find used vertices
+        used_verts = set()
+        for face in new_faces:
+            valid = ~np.isnan(face)
+            used_verts.update(face[valid].astype(int))
+
+        used_verts = sorted(list(used_verts))
+
+        # Create vertex mapping
+        vert_map = {old: new for new, old in enumerate(used_verts)}
+
+        # Update face indices
+        updated_faces = new_faces.copy()
+        for i, face in enumerate(updated_faces):
+            valid = ~np.isnan(face)
+            updated_faces[i, valid] = [vert_map[int(v)] for v in face[valid]]
+
+        new_verts = self.verts[used_verts]
+
+        return Particle(new_verts, updated_faces, self.interp)
+
+    def plot(self, ax=None, **kwargs):
+        """
+        Plot the particle surface.
+
+        Parameters
+        ----------
+        ax : matplotlib axes, optional
+            Axes to plot on. If None, creates new figure.
+        **kwargs : dict
+            Keyword arguments for plot3D or plot_trisurf.
+
+        Returns
+        -------
+        ax : matplotlib axes
+            The axes object.
+        """
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        if ax is None:
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+
+        # Get default kwargs
+        color = kwargs.pop('color', 'gold')
+        alpha = kwargs.pop('alpha', 0.7)
+        edgecolor = kwargs.pop('edgecolor', 'black')
+        linewidth = kwargs.pop('linewidth', 0.5)
+
+        # Create polygon collection
+        polygons = []
+        for face in self.faces:
+            valid = ~np.isnan(face)
+            indices = face[valid].astype(int)
+            vertices = self.verts[indices]
+            polygons.append(vertices)
+
+        collection = Poly3DCollection(polygons, alpha=alpha, facecolor=color,
+                                       edgecolor=edgecolor, linewidth=linewidth, **kwargs)
+        ax.add_collection3d(collection)
+
+        # Set axis limits
+        all_verts = self.verts
+        max_range = np.max([
+            all_verts[:, 0].max() - all_verts[:, 0].min(),
+            all_verts[:, 1].max() - all_verts[:, 1].min(),
+            all_verts[:, 2].max() - all_verts[:, 2].min()
+        ]) / 2
+
+        mid_x = (all_verts[:, 0].max() + all_verts[:, 0].min()) / 2
+        mid_y = (all_verts[:, 1].max() + all_verts[:, 1].min()) / 2
+        mid_z = (all_verts[:, 2].max() + all_verts[:, 2].min()) / 2
+
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+        ax.set_xlabel('X (nm)')
+        ax.set_ylabel('Y (nm)')
+        ax.set_zlabel('Z (nm)')
+
+        return ax
+
+    def plot2(self, ax=None, **kwargs):
+        """
+        Alternative plot using triangulation.
+
+        Parameters
+        ----------
+        ax : matplotlib axes, optional
+            Axes to plot on.
+        **kwargs : dict
+            Keyword arguments.
+
+        Returns
+        -------
+        ax : matplotlib axes
+            The axes object.
+        """
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+
+        if ax is None:
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+
+        # Convert to triangles for plot_trisurf
+        p_tri = self.totriangles()
+
+        color = kwargs.pop('color', 'gold')
+        alpha = kwargs.pop('alpha', 0.7)
+
+        ax.plot_trisurf(p_tri.verts[:, 0], p_tri.verts[:, 1], p_tri.verts[:, 2],
+                        triangles=p_tri.faces[:, :3].astype(int),
+                        color=color, alpha=alpha, **kwargs)
+
+        ax.set_xlabel('X (nm)')
+        ax.set_ylabel('Y (nm)')
+        ax.set_zlabel('Z (nm)')
+
+        return ax
+
     def __add__(self, other: 'Particle') -> 'Particle':
         """Concatenate two particles."""
         if self.n_faces == 0:
