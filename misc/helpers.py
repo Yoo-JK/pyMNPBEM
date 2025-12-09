@@ -200,3 +200,236 @@ def pdist2(pos1: np.ndarray, pos2: np.ndarray) -> np.ndarray:
         Distances, shape (n1, n2).
     """
     return np.sqrt(bdist2(pos1, pos2))
+
+
+def bradius(p) -> np.ndarray:
+    """
+    Compute minimal radius for spheres enclosing boundary elements.
+
+    The radius is the maximum distance from each face centroid to any
+    of its vertices.
+
+    Parameters
+    ----------
+    p : particle object
+        Discretized particle boundary with pos, verts, and faces attributes.
+
+    Returns
+    -------
+    ndarray
+        Minimal radius for spheres enclosing each boundary element, shape (n,).
+    """
+    n = p.n
+    r = np.zeros(n)
+
+    pos = p.pos  # centroids, shape (n, 3)
+    verts = p.verts  # vertices
+    faces = p.faces  # face vertex indices
+
+    # Process each vertex of the faces
+    num_verts_per_face = faces.shape[1] if len(faces.shape) > 1 else 3
+
+    for i in range(num_verts_per_face):
+        # Get vertex indices for this corner
+        if len(faces.shape) > 1:
+            vert_idx = faces[:, i]
+        else:
+            vert_idx = faces
+
+        # Handle NaN values (for triangles in a mixed tri/quad mesh)
+        valid = ~np.isnan(vert_idx) if np.issubdtype(vert_idx.dtype, np.floating) else np.ones(n, dtype=bool)
+        valid_idx = vert_idx[valid].astype(int)
+
+        if len(valid_idx) > 0:
+            # Calculate distance from centroid to this vertex
+            dist = np.sqrt(np.sum((pos[valid] - verts[valid_idx]) ** 2, axis=1))
+            r[valid] = np.maximum(r[valid], dist)
+
+    return r
+
+
+def refinematrix(p1, p2, abs_cutoff: float = 0, rel_cutoff: float = 0,
+                 memsize: int = int(2e7)) -> sparse.csr_matrix:
+    """
+    Compute refinement matrix for Green functions.
+
+    Creates a sparse matrix indicating which elements need refinement:
+    - 2 for diagonal elements (same position)
+    - 1 for off-diagonal elements within cutoff distance
+    - 0 for elements that don't need refinement
+
+    Parameters
+    ----------
+    p1 : particle object
+        First discretized particle boundary with pos attribute.
+    p2 : particle object
+        Second discretized particle boundary with pos, verts, faces attributes.
+    abs_cutoff : float, optional
+        Absolute distance cutoff for integration refinement. Default 0.
+    rel_cutoff : float, optional
+        Relative distance cutoff (in units of boundary element radius). Default 0.
+    memsize : int, optional
+        Maximum memory size for processing. Default 2e7.
+
+    Returns
+    -------
+    sparse.csr_matrix
+        Refinement matrix of shape (n1, n2).
+    """
+    pos1 = p1.pos
+    pos2 = p2.pos
+    n1 = len(pos1)
+    n2 = len(pos2)
+
+    # Boundary element radii for p2
+    rad2 = bradius(p2)
+
+    # Try to use boundary radius of p1, fall back to rad2
+    try:
+        rad1 = bradius(p1)
+    except:
+        rad1 = rad2
+
+    # Initialize sparse matrix data
+    rows = []
+    cols = []
+    data = []
+
+    # Work through matrix in portions to manage memory
+    chunk_size = max(1, int(memsize / n1))
+    ind2 = list(range(0, n2, chunk_size))
+    if ind2[-1] != n2:
+        ind2.append(n2)
+
+    for i in range(len(ind2) - 1):
+        i2_start = ind2[i]
+        i2_end = ind2[i + 1]
+        i2_slice = slice(i2_start, i2_end)
+
+        # Distance between positions
+        d = pdist2(pos1, pos2[i2_slice])
+
+        # Subtract radius to get approximate distance to boundary elements
+        d2 = d - rad2[i2_slice]
+
+        # Distances in units of boundary element radius
+        if len(rad1) != 1:
+            id_dist = d2 / rad1[:, np.newaxis]
+        else:
+            id_dist = d2 / rad2[i2_slice]
+
+        # Find diagonal elements (d == 0)
+        diag_row, diag_col = np.where(d == 0)
+        for r, c in zip(diag_row, diag_col):
+            rows.append(r)
+            cols.append(c + i2_start)
+            data.append(2)
+
+        # Find off-diagonal elements for refinement
+        refine_mask = ((d2 < abs_cutoff) | (id_dist < rel_cutoff)) & (d != 0)
+        refine_row, refine_col = np.where(refine_mask)
+        for r, c in zip(refine_row, refine_col):
+            rows.append(r)
+            cols.append(c + i2_start)
+            data.append(1)
+
+    return sparse.csr_matrix((data, (rows, cols)), shape=(n1, n2))
+
+
+def refinematrixlayer(p1, p2, layer, abs_cutoff: float = 0, rel_cutoff: float = 0,
+                      memsize: int = int(2e7)) -> sparse.csr_matrix:
+    """
+    Compute refinement matrix for Green functions with layer structures.
+
+    For layer structures, the distance is computed using the radial distance
+    in the x-y plane and the minimum distance to the layer in z.
+
+    Parameters
+    ----------
+    p1 : particle object
+        First discretized particle boundary with pos attribute.
+    p2 : particle object
+        Second discretized particle boundary with pos, verts, faces attributes.
+    layer : layer structure
+        Layer structure with mindist() method.
+    abs_cutoff : float, optional
+        Absolute distance cutoff for integration refinement. Default 0.
+    rel_cutoff : float, optional
+        Relative distance cutoff (in units of boundary element radius). Default 0.
+    memsize : int, optional
+        Maximum memory size for processing. Default 2e7.
+
+    Returns
+    -------
+    sparse.csr_matrix
+        Refinement matrix of shape (n1, n2).
+    """
+    pos1 = p1.pos
+    pos2 = p2.pos
+    n1 = len(pos1)
+    n2 = len(pos2)
+
+    # Boundary element radii for p2
+    rad2 = bradius(p2)
+
+    # Try to use boundary radius of p1, fall back to rad2
+    try:
+        rad1 = bradius(p1)
+    except:
+        rad1 = rad2
+
+    # Initialize sparse matrix data
+    rows = []
+    cols = []
+    data = []
+
+    # Work through matrix in portions to manage memory
+    chunk_size = max(1, int(memsize / n1))
+    ind2 = list(range(0, n2, chunk_size))
+    if ind2[-1] != n2:
+        ind2.append(n2)
+
+    for i in range(len(ind2) - 1):
+        i2_start = ind2[i]
+        i2_end = ind2[i + 1]
+        i2_slice = slice(i2_start, i2_end)
+
+        # Radial distance in x-y plane
+        r = pdist2(pos1[:, :2], pos2[i2_slice, :2])
+
+        # Minimum distance to layer in z
+        z1 = layer.mindist(pos1[:, 2])
+        z2 = layer.mindist(pos2[i2_slice, 2])
+        z = z1[:, np.newaxis] + z2[np.newaxis, :]
+
+        # Total distance
+        d = np.sqrt(r ** 2 + z ** 2)
+
+        # Subtract radius to get approximate distance to boundary elements
+        d2 = d - rad2[i2_slice]
+
+        # Distances in units of boundary element radius
+        if len(rad1) != 1:
+            id_dist = d2 / rad1[:, np.newaxis]
+        else:
+            id_dist = d2 / rad2[i2_slice]
+
+        # Find elements for refinement
+        refine_mask = (d2 < abs_cutoff) | (id_dist < rel_cutoff)
+        refine_row, refine_col = np.where(refine_mask)
+        for r, c in zip(refine_row, refine_col):
+            rows.append(r)
+            cols.append(c + i2_start)
+            data.append(1)
+
+        # Check for diagonal boundary elements (same positions)
+        if np.array_equal(pos1, pos2):
+            # Add extra weight for diagonal elements
+            diag_mask = refine_mask & (np.arange(n1)[:, np.newaxis] == np.arange(i2_start, i2_end))
+            diag_row, diag_col = np.where(diag_mask)
+            for r, c in zip(diag_row, diag_col):
+                rows.append(r)
+                cols.append(c + i2_start)
+                data.append(1)  # Additional 1 to make it 2 total
+
+    return sparse.csr_matrix((data, (rows, cols)), shape=(n1, n2))

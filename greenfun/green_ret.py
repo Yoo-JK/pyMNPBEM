@@ -418,7 +418,7 @@ class GreenRetLayer(GreenRet):
     Retarded Green function with layer (substrate) effects.
 
     Includes reflected Green function contributions from
-    planar interfaces using Fresnel coefficients.
+    planar interfaces using Sommerfeld integrals or tabulated values.
 
     Parameters
     ----------
@@ -430,6 +430,17 @@ class GreenRetLayer(GreenRet):
         Layer structure defining interfaces.
     k : complex
         Wavenumber.
+    tab : GreenTableLayer, optional
+        Pre-computed Green function table for interpolation.
+    deriv : str
+        Type of derivative: 'norm' for surface normal, 'cart' for Cartesian.
+
+    Attributes
+    ----------
+    G_dict : dict
+        Reflected Green function components (p, s polarizations).
+    F_dict : dict
+        Surface derivatives of reflected Green function.
     """
 
     def __init__(
@@ -438,50 +449,369 @@ class GreenRetLayer(GreenRet):
         p2: Particle,
         layer,
         k: complex = None,
+        tab=None,
+        deriv: str = 'norm',
         **kwargs
     ):
         super().__init__(p1, p2, k, **kwargs)
         self.layer = layer
-        self._G_refl = None
+        self.tab = tab
+        self.deriv = deriv
 
-    def G_reflected(self, k: complex = None) -> np.ndarray:
+        # Reflected Green function storage
+        self._G_refl = None
+        self._F_refl = None
+        self._Gp_refl = None
+        self._enei = None
+        self._G_dict = None
+        self._F_dict = None
+
+        # Indices for diagonal refinement
+        self._id = None
+        self._ind = None
+
+        # Initialize refinement indices
+        self._init_refinement()
+
+    def _init_refinement(self) -> None:
+        """Initialize indices for diagonal element refinement."""
+        if self.p1 is self.p2 or (hasattr(self.p1, 'pos') and hasattr(self.p2, 'pos') and
+                                   np.allclose(self.p1.pos, self.p2.pos)):
+            n = self.n1
+            self._id = np.arange(n) * n + np.arange(n)
+
+    def initrefl(self, enei: float, ind: np.ndarray = None) -> 'GreenRetLayer':
         """
-        Compute reflected Green function from layer interfaces.
+        Initialize reflected part of Green function.
+
+        Computes the reflected Green function using tabulated values
+        and Sommerfeld integral interpolation.
 
         Parameters
         ----------
-        k : complex, optional
-            Wavenumber.
+        enei : float
+            Wavelength of light in vacuum (nm).
+        ind : ndarray, optional
+            Index to specific matrix elements to compute.
+
+        Returns
+        -------
+        GreenRetLayer
+            Self with computed reflected Green functions.
+        """
+        if self._enei is not None and enei == self._enei:
+            return self
+
+        self._enei = enei
+
+        if ind is not None:
+            return self._initrefl3(enei, ind)
+        elif self.deriv == 'norm':
+            return self._initrefl1(enei)
+        else:
+            return self._initrefl2(enei)
+
+    def _initrefl1(self, enei: float) -> 'GreenRetLayer':
+        """
+        Initialize reflected Green function with surface normal derivatives.
+        Computes G and F (surface derivative).
+        """
+        if self.tab is not None:
+            self.tab.compute_table(enei)
+
+        pos1 = self.pos1
+        pos2 = self.pos2
+
+        x = pos1[:, 0:1] - pos2[:, 0].T
+        y = pos1[:, 1:2] - pos2[:, 1].T
+        r = np.sqrt(x**2 + y**2)
+        z1 = np.tile(pos1[:, 2:3], (1, len(pos2)))
+        z2 = np.tile(pos2[:, 2].T, (len(pos1), 1))
+
+        nvec = self.p1.nvec if hasattr(self.p1, 'nvec') else np.zeros((self.n1, 3))
+        r_safe = np.where(r < 1e-10, 1e-10, r)
+        in_xy = (nvec[:, 0:1] * x + nvec[:, 1:2] * y) / r_safe
+
+        G_dict, Fr_dict, Fz_dict = self._compute_sommerfeld(enei, r, z1, z2)
+
+        F_dict = {}
+        area = self.p2.area if hasattr(self.p2, 'area') else np.ones(self.n2)
+
+        for name in G_dict.keys():
+            G_dict[name] = G_dict[name] * area[np.newaxis, :]
+            F_dict[name] = (Fr_dict[name] * in_xy +
+                          Fz_dict[name] * nvec[:, 2:3]) * area[np.newaxis, :]
+
+        if self._id is not None and len(self._id) > 0:
+            self._refine_diagonal(enei, G_dict, F_dict, Fr_dict, Fz_dict)
+
+        self._G_dict = G_dict
+        self._F_dict = F_dict
+        return self
+
+    def _initrefl2(self, enei: float) -> 'GreenRetLayer':
+        """Initialize with Cartesian derivatives. Computes G and Gp (gradient)."""
+        if self.tab is not None:
+            self.tab.compute_table(enei)
+
+        pos1 = self.pos1
+        pos2 = self.pos2
+
+        x = pos1[:, 0:1] - pos2[:, 0].T
+        y = pos1[:, 1:2] - pos2[:, 1].T
+        r = np.sqrt(x**2 + y**2)
+        z1 = np.tile(pos1[:, 2:3], (1, len(pos2)))
+        z2 = np.tile(pos2[:, 2].T, (len(pos1), 1))
+
+        G_dict, Fr_dict, Fz_dict = self._compute_sommerfeld(enei, r, z1, z2)
+
+        Gp_dict = {}
+        area = self.p2.area if hasattr(self.p2, 'area') else np.ones(self.n2)
+        r_safe = np.where(r < 1e-10, 1e-10, r)
+
+        for name in G_dict.keys():
+            G_dict[name] = G_dict[name] * area[np.newaxis, :]
+            Gp = np.zeros((self.n1, 3, self.n2), dtype=complex)
+            Gp[:, 0, :] = Fr_dict[name] * (x / r_safe) * area[np.newaxis, :]
+            Gp[:, 1, :] = Fr_dict[name] * (y / r_safe) * area[np.newaxis, :]
+            Gp[:, 2, :] = Fz_dict[name] * area[np.newaxis, :]
+            Gp_dict[name] = Gp
+
+        F_dict = {}
+        nvec = self.p1.nvec if hasattr(self.p1, 'nvec') else np.zeros((self.n1, 3))
+        for name in G_dict.keys():
+            F_dict[name] = np.sum(nvec[:, :, np.newaxis] * Gp_dict[name], axis=1)
+
+        self._G_dict = G_dict
+        self._F_dict = F_dict
+        self._Gp_refl = Gp_dict
+        return self
+
+    def _initrefl3(self, enei: float, ind: np.ndarray) -> 'GreenRetLayer':
+        """Initialize for specific indices only."""
+        if self.tab is not None:
+            self.tab.compute_table(enei)
+
+        row, col = np.unravel_index(ind, (self.n1, self.n2))
+        pos1 = self.pos1[row]
+        pos2 = self.pos2[col]
+
+        x = pos1[:, 0] - pos2[:, 0]
+        y = pos1[:, 1] - pos2[:, 1]
+        r = np.sqrt(x**2 + y**2)
+        z1 = pos1[:, 2]
+        z2 = pos2[:, 2]
+
+        nvec = self.p1.nvec[row] if hasattr(self.p1, 'nvec') else np.zeros((len(row), 3))
+        area = self.p2.area[col] if hasattr(self.p2, 'area') else np.ones(len(col))
+        r_safe = np.where(r < 1e-10, 1e-10, r)
+        in_xy = (nvec[:, 0] * x + nvec[:, 1] * y) / r_safe
+
+        G_vals, Fr_vals, Fz_vals = self._compute_sommerfeld_1d(enei, r, z1, z2)
+
+        G_dict = {}
+        F_dict = {}
+        for name in G_vals.keys():
+            G_dict[name] = G_vals[name] * area
+            F_dict[name] = (Fr_vals[name] * in_xy + Fz_vals[name] * nvec[:, 2]) * area
+
+        self._G_dict = G_dict
+        self._F_dict = F_dict
+        self._refl_ind = ind
+        return self
+
+    def _compute_sommerfeld(
+        self,
+        enei: float,
+        r: np.ndarray,
+        z1: np.ndarray,
+        z2: np.ndarray
+    ) -> Tuple[dict, dict, dict]:
+        """
+        Compute reflected Green function using Sommerfeld integrals.
+        Uses image charge approximation with Fresnel coefficients.
+        """
+        k0 = 2 * np.pi / enei
+        z_interface = self.layer.z[0] if len(self.layer.z) > 0 else 0
+
+        eps_above = self.layer.eps[0](enei) if callable(self.layer.eps[0]) else self.layer.eps[0]
+        eps_below = self.layer.eps[1](enei) if len(self.layer.eps) > 1 else eps_above
+        if hasattr(eps_above, '__len__'):
+            eps_above = eps_above[0]
+        if hasattr(eps_below, '__len__'):
+            eps_below = eps_below[0]
+
+        k1 = k0 * np.sqrt(eps_above)
+        z1_mirror = 2 * z_interface - z1
+        z_diff = z1_mirror - z2
+        d_mirror = np.sqrt(r**2 + z_diff**2)
+        d_safe = np.where(d_mirror < 1e-10, 1e-10, d_mirror)
+
+        r_p = (eps_below - eps_above) / (eps_below + eps_above)
+        r_s = (np.sqrt(eps_above) - np.sqrt(eps_below)) / (np.sqrt(eps_above) + np.sqrt(eps_below))
+
+        G_p = r_p * np.exp(1j * k1 * d_safe) / (4 * np.pi * d_safe)
+        G_s = r_s * np.exp(1j * k1 * d_safe) / (4 * np.pi * d_safe)
+
+        factor = (1j * k1 - 1/d_safe) / d_safe
+        Fr_p = G_p * factor * r / d_safe
+        Fr_s = G_s * factor * r / d_safe
+        Fz_p = G_p * factor * z_diff / d_safe
+        Fz_s = G_s * factor * z_diff / d_safe
+
+        return (
+            {'p': G_p, 's': G_s},
+            {'p': Fr_p, 's': Fr_s},
+            {'p': Fz_p, 's': Fz_s}
+        )
+
+    def _compute_sommerfeld_1d(
+        self,
+        enei: float,
+        r: np.ndarray,
+        z1: np.ndarray,
+        z2: np.ndarray
+    ) -> Tuple[dict, dict, dict]:
+        """Compute for 1D arrays."""
+        G, Fr, Fz = self._compute_sommerfeld(enei, r[:, np.newaxis], z1[:, np.newaxis], z2[:, np.newaxis])
+        return (
+            {k: v.flatten() for k, v in G.items()},
+            {k: v.flatten() for k, v in Fr.items()},
+            {k: v.flatten() for k, v in Fz.items()}
+        )
+
+    def _refine_diagonal(
+        self,
+        enei: float,
+        G_dict: dict,
+        F_dict: dict,
+        Fr_dict: dict,
+        Fz_dict: dict
+    ) -> None:
+        """
+        Refine diagonal elements using polar integration.
+        Implements Waxenegger et al., Comp. Phys. Commun. 193, 138 (2015).
+        """
+        if self._id is None or len(self._id) == 0:
+            return
+
+        p = self.p1
+        n = p.n_faces if hasattr(p, 'n_faces') else len(p.pos)
+        diag_idx = np.arange(n)
+
+        n_phi = 12
+        n_r = 6
+        phi = np.linspace(0, 2*np.pi, n_phi, endpoint=False)
+        r_quad = np.array([0.1, 0.3, 0.5, 0.7, 0.9, 0.95])
+        w_r = np.array([0.1, 0.2, 0.2, 0.2, 0.2, 0.1])
+
+        for name in G_dict.keys():
+            G_refined = np.zeros(n, dtype=complex)
+            F_refined = np.zeros(n, dtype=complex)
+
+            for i in range(n):
+                pos_c = p.pos[i]
+                nvec_i = p.nvec[i] if hasattr(p, 'nvec') else np.array([0, 0, 1])
+                face_radius = np.sqrt(p.area[i] / np.pi) if hasattr(p, 'area') else 1.0
+
+                G_sum = 0.0
+                F_sum = 0.0
+
+                for j, rj in enumerate(r_quad):
+                    r_actual = rj * face_radius
+                    for phi_k in phi:
+                        dx = r_actual * np.cos(phi_k)
+                        dy = r_actual * np.sin(phi_k)
+                        r_dist = np.sqrt(dx**2 + dy**2)
+                        z1_q = pos_c[2]
+                        z2_q = pos_c[2]
+
+                        G_q, Fr_q, Fz_q = self._compute_sommerfeld_1d(
+                            enei, np.array([r_dist]), np.array([z1_q]), np.array([z2_q])
+                        )
+                        weight = w_r[j] * r_actual * (2 * np.pi / n_phi)
+                        G_sum += G_q[name][0] * weight
+
+                        r_safe = max(r_dist, 1e-10)
+                        in_xy = (nvec_i[0] * dx + nvec_i[1] * dy) / r_safe
+                        F_sum += (Fr_q[name][0] * in_xy + Fz_q[name][0] * nvec_i[2]) * weight
+
+                G_refined[i] = G_sum
+                F_refined[i] = F_sum
+
+            G_dict[name].flat[self._id] = G_refined
+            F_dict[name].flat[self._id] = F_refined
+
+    def shapefunction(self, ind: int) -> np.ndarray:
+        """
+        Compute shape function for boundary element.
+
+        Parameters
+        ----------
+        ind : int
+            Index to boundary element.
 
         Returns
         -------
         ndarray
-            Reflected Green function contribution.
+            Shape functions for element vertices.
         """
+        p = self.p1
+        if not hasattr(p, 'faces'):
+            return np.array([1.0])
+
+        face = p.faces[ind]
+        if np.isnan(face[-1]) or face[-1] < 0:
+            xi = np.array([0, 1, 0])
+            eta = np.array([0, 0, 1])
+            return np.column_stack([xi, eta, 1 - xi - eta])
+        else:
+            xi = np.array([-1, 1, 1, -1])
+            eta = np.array([-1, -1, 1, 1])
+            return 0.25 * np.column_stack([
+                (1 - xi) * (1 - eta),
+                (1 + xi) * (1 - eta),
+                (1 + xi) * (1 + eta),
+                (1 - xi) * (1 + eta)
+            ])
+
+    def G_reflected(self, k: complex = None) -> np.ndarray:
+        """Compute total reflected Green function (sum of polarizations)."""
+        if self._G_dict is None:
+            return self._simple_reflected_G(k)
+
+        G_total = np.zeros((self.n1, self.n2), dtype=complex)
+        for name, G in self._G_dict.items():
+            G_total += G
+        return G_total
+
+    def F_reflected(self, k: complex = None) -> np.ndarray:
+        """Compute surface derivative of reflected Green function."""
+        if self._F_dict is None:
+            return np.zeros((self.n1, self.n2), dtype=complex)
+
+        F_total = np.zeros((self.n1, self.n2), dtype=complex)
+        for name, F in self._F_dict.items():
+            F_total += F
+        return F_total
+
+    def _simple_reflected_G(self, k: complex = None) -> np.ndarray:
+        """Simple image charge approximation for backward compatibility."""
         if k is not None:
             self.set_k(k)
         k = self.k
 
-        if self._G_refl is not None and self._cached_k == k:
-            return self._G_refl
-
-        # Get layer parameters
         z_interface = self.layer.z[0] if len(self.layer.z) > 0 else 0
-
-        # Source and target positions
         pos1 = self.pos1
         pos2 = self.pos2
 
-        # Mirror image positions (reflection about z=z_interface)
         pos1_mirror = pos1.copy()
         pos1_mirror[:, 2] = 2 * z_interface - pos1[:, 2]
 
-        # Distance from mirror sources to targets
         dr = pos2[np.newaxis, :, :] - pos1_mirror[:, np.newaxis, :]
         d = np.linalg.norm(dr, axis=2)
         d_safe = np.where(d == 0, np.inf, d)
 
-        # Fresnel reflection coefficient (simplified for normal incidence)
         if len(self.layer.eps) >= 2:
             eps1, eps2 = self.layer.eps[0], self.layer.eps[1]
             n1 = np.sqrt(eps1) if np.isscalar(eps1) else np.sqrt(eps1(2*np.pi/k)[0])
@@ -490,18 +820,24 @@ class GreenRetLayer(GreenRet):
         else:
             r_fresnel = 0
 
-        # Reflected Green function
         G_refl = r_fresnel * np.exp(1j * k * d_safe) / (4 * np.pi * d_safe)
         G_refl = G_refl * self.p2.area[np.newaxis, :]
-
-        self._G_refl = G_refl
-        return self._G_refl
+        return G_refl
 
     def G(self, k: complex = None) -> np.ndarray:
         """Total Green function including reflection."""
         return super().G(k) + self.G_reflected(k)
 
+    def F(self, k: complex = None) -> np.ndarray:
+        """Total surface derivative including reflection."""
+        return super().F(k) + self.F_reflected(k)
+
     def clear_cache(self) -> None:
         """Clear cached matrices."""
         super().clear_cache()
         self._G_refl = None
+        self._F_refl = None
+        self._Gp_refl = None
+        self._G_dict = None
+        self._F_dict = None
+        self._enei = None

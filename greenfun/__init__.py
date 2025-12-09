@@ -33,8 +33,14 @@ from .comp_green_stat import CompGreenStat
 from .green_ret import GreenRet, GreenRetLayer
 from .comp_green_ret import CompGreenRet, CompGreenRetLayer
 from .comp_green_stat_layer import CompGreenStatLayer, CompGreenStatMirror, CompGreenRetMirror
-from .coverlayer import CoverLayer, GreenStatCover, GreenRetCover, coverlayer
-from .aca import ACAMatrix, ACAGreen, aca, aca_full, aca_partial, CompressedGreenMatrix
+from .coverlayer import (
+    CoverLayer, GreenStatCover, GreenRetCover, coverlayer,
+    refine, refinestat, refineret, shift
+)
+from .aca import (
+    ACAMatrix, ACAGreen, aca, aca_full, aca_partial, CompressedGreenMatrix,
+    CompGreenStatACA, CompGreenRetACA, CompGreenRetLayerACA
+)
 from .hmatrix import ClusterTree, HMatrix, HMatrixBlock, HMatrixGreen, hmatrix_solve
 from .green_table_layer import GreenTableLayer, CompGreenTableLayer
 from .slicer import Slicer, slicer, slice_matrix, apply_blockwise, blockwise_multiply, BlockMatrix, partition_indices
@@ -64,6 +70,9 @@ __all__ = [
     "aca_full",
     "aca_partial",
     "CompressedGreenMatrix",
+    "CompGreenStatACA",
+    "CompGreenRetACA",
+    "CompGreenRetLayerACA",
     # H-matrices
     "ClusterTree",
     "HMatrix",
