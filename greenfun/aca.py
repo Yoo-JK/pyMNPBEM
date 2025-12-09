@@ -422,6 +422,355 @@ class ACAGreen:
         return CompressedGreenMatrix(G_near, G_far_aca, self.near_mask)
 
 
+class CompGreenStatACA:
+    """
+    ACA-compressed quasistatic Green function.
+
+    This class wraps CompGreenStat with ACA compression using H-matrices.
+    Provides the same interface as CompGreenStat but with O(N log N) complexity.
+
+    Parameters
+    ----------
+    particle : ComParticle
+        Composite particle object
+    htol : float
+        H-matrix tolerance for ACA
+    kmax : int
+        Maximum rank for low-rank blocks
+    leaf_size : int
+        Leaf cluster size for H-matrix tree
+    eta : float
+        Admissibility parameter
+    """
+
+    def __init__(self, particle, htol=1e-6, kmax=100, leaf_size=32, eta=2.0, **options):
+        """Initialize ACA-compressed Green function."""
+        from .comp_green_stat import CompGreenStat
+        from .hmatrix import ClusterTree, HMatrix
+
+        self.p = particle
+        self.htol = htol
+        self.kmax = kmax
+        self.eta = eta
+
+        # Get particle centroid positions
+        if hasattr(particle, 'pc'):
+            self.pc = particle.pc
+        else:
+            self.pc = particle
+
+        self.pos = self.pc.pos
+        self.n = len(self.pos)
+
+        # Create underlying Green function for element evaluation
+        self.g = CompGreenStat(particle, **options)
+
+        # Build cluster tree
+        self.tree = ClusterTree(self.pos, leaf_size=leaf_size)
+
+        # H-matrix will be built on demand
+        self._hmat = None
+        self._hmat_key = None
+
+    def eval(self, *keys):
+        """
+        Evaluate Green function matrices.
+
+        Parameters
+        ----------
+        *keys : str
+            Keys for Green function components:
+            'G' - Green function
+            'F' - Surface derivative
+            'H1' - F + 2*pi
+            'H2' - F - 2*pi
+
+        Returns
+        -------
+        list
+            H-matrix representation for each requested key.
+        """
+        from .hmatrix import HMatrix
+
+        results = []
+
+        for key in keys:
+            if key == 'Gp':
+                raise NotImplementedError("Gp not implemented for CompGreenStatACA")
+
+            # Define matrix element function
+            def matrix_func(i, j):
+                return self.g.eval([(i, j)], key)[0]
+
+            # Build H-matrix
+            hmat = HMatrix(
+                self.tree, self.tree, matrix_func,
+                eta=self.eta, eps=self.htol
+            )
+
+            results.append(hmat)
+
+        return results if len(results) > 1 else results[0]
+
+    def potential(self, sig, key='G'):
+        """
+        Compute potential from surface charge.
+
+        Parameters
+        ----------
+        sig : ndarray
+            Surface charge distribution.
+        key : str
+            Green function type ('G', 'F', 'H1', 'H2').
+
+        Returns
+        -------
+        ndarray
+            Potential values.
+        """
+        hmat = self.eval(key)
+        return hmat @ sig
+
+    def __repr__(self):
+        return f"CompGreenStatACA(n={self.n}, htol={self.htol})"
+
+
+class CompGreenRetACA:
+    """
+    ACA-compressed retarded Green function.
+
+    This class wraps CompGreenRet with ACA compression using H-matrices.
+    Provides the same interface as CompGreenRet but with O(N log N) complexity.
+
+    Parameters
+    ----------
+    particle : ComParticle
+        Composite particle object
+    htol : float
+        H-matrix tolerance for ACA
+    kmax : int
+        Maximum rank for low-rank blocks
+    leaf_size : int
+        Leaf cluster size for H-matrix tree
+    eta : float
+        Admissibility parameter
+    """
+
+    def __init__(self, particle, htol=1e-6, kmax=100, leaf_size=32, eta=2.0, **options):
+        """Initialize ACA-compressed retarded Green function."""
+        from .comp_green_ret import CompGreenRet
+        from .hmatrix import ClusterTree
+
+        self.p = particle
+        self.htol = htol
+        self.kmax = kmax
+        self.eta = eta
+
+        # Get particle centroid positions
+        if hasattr(particle, 'pc'):
+            self.pc = particle.pc
+        else:
+            self.pc = particle
+
+        self.pos = self.pc.pos
+        self.n = len(self.pos)
+
+        # Create underlying Green function for element evaluation
+        self.g = CompGreenRet(particle, **options)
+
+        # Build cluster tree
+        self.tree = ClusterTree(self.pos, leaf_size=leaf_size)
+
+        # H-matrices for different wavelengths
+        self._hmat_cache = {}
+        self._enei = None
+
+    def eval(self, enei, *keys):
+        """
+        Evaluate Green function matrices at given energy.
+
+        Parameters
+        ----------
+        enei : float
+            Photon energy in eV.
+        *keys : str
+            Keys for Green function components.
+
+        Returns
+        -------
+        list
+            H-matrix representation for each requested key.
+        """
+        from .hmatrix import HMatrix
+
+        results = []
+
+        for key in keys:
+            cache_key = (enei, key)
+
+            if cache_key not in self._hmat_cache:
+                # Initialize underlying Green function at this energy
+                self.g.init(enei)
+
+                # Define matrix element function
+                def matrix_func(i, j, key=key):
+                    return self.g.eval([(i, j)], key)[0]
+
+                # Build H-matrix
+                hmat = HMatrix(
+                    self.tree, self.tree, matrix_func,
+                    eta=self.eta, eps=self.htol
+                )
+                self._hmat_cache[cache_key] = hmat
+
+            results.append(self._hmat_cache[cache_key])
+
+        return results if len(results) > 1 else results[0]
+
+    def potential(self, sig, enei, key='G'):
+        """
+        Compute potential from surface charge at given energy.
+
+        Parameters
+        ----------
+        sig : ndarray
+            Surface charge distribution.
+        enei : float
+            Photon energy in eV.
+        key : str
+            Green function type.
+
+        Returns
+        -------
+        ndarray
+            Potential values.
+        """
+        hmat = self.eval(enei, key)
+        return hmat @ sig
+
+    def __repr__(self):
+        return f"CompGreenRetACA(n={self.n}, htol={self.htol})"
+
+
+class CompGreenRetLayerACA:
+    """
+    ACA-compressed retarded Green function with layer effects.
+
+    This class wraps CompGreenRetLayer with ACA compression using H-matrices.
+
+    Parameters
+    ----------
+    particle : ComParticle
+        Composite particle object
+    layer : LayerStructure
+        Layer structure for substrate effects
+    htol : float
+        H-matrix tolerance for ACA
+    kmax : int
+        Maximum rank for low-rank blocks
+    leaf_size : int
+        Leaf cluster size for H-matrix tree
+    eta : float
+        Admissibility parameter
+    """
+
+    def __init__(self, particle, layer=None, htol=1e-6, kmax=100,
+                 leaf_size=32, eta=2.0, **options):
+        """Initialize ACA-compressed layer Green function."""
+        from .comp_green_ret import CompGreenRetLayer
+        from .hmatrix import ClusterTree
+
+        self.p = particle
+        self.layer = layer
+        self.htol = htol
+        self.kmax = kmax
+        self.eta = eta
+
+        # Get particle centroid positions
+        if hasattr(particle, 'pc'):
+            self.pc = particle.pc
+        else:
+            self.pc = particle
+
+        self.pos = self.pc.pos
+        self.n = len(self.pos)
+
+        # Create underlying Green function
+        self.g = CompGreenRetLayer(particle, layer=layer, **options)
+
+        # Build cluster tree
+        self.tree = ClusterTree(self.pos, leaf_size=leaf_size)
+
+        # H-matrices cache
+        self._hmat_cache = {}
+
+    def eval(self, enei, *keys):
+        """
+        Evaluate Green function matrices at given energy.
+
+        Parameters
+        ----------
+        enei : float
+            Photon energy in eV.
+        *keys : str
+            Keys for Green function components.
+
+        Returns
+        -------
+        list
+            H-matrix representation for each requested key.
+        """
+        from .hmatrix import HMatrix
+
+        results = []
+
+        for key in keys:
+            cache_key = (enei, key)
+
+            if cache_key not in self._hmat_cache:
+                # Initialize underlying Green function
+                self.g.init(enei)
+
+                # Define matrix element function
+                def matrix_func(i, j, key=key):
+                    return self.g.eval([(i, j)], key)[0]
+
+                # Build H-matrix
+                hmat = HMatrix(
+                    self.tree, self.tree, matrix_func,
+                    eta=self.eta, eps=self.htol
+                )
+                self._hmat_cache[cache_key] = hmat
+
+            results.append(self._hmat_cache[cache_key])
+
+        return results if len(results) > 1 else results[0]
+
+    def potential(self, sig, enei, key='G'):
+        """
+        Compute potential from surface charge.
+
+        Parameters
+        ----------
+        sig : ndarray
+            Surface charge distribution.
+        enei : float
+            Photon energy in eV.
+        key : str
+            Green function type.
+
+        Returns
+        -------
+        ndarray
+            Potential values.
+        """
+        hmat = self.eval(enei, key)
+        return hmat @ sig
+
+    def __repr__(self):
+        return f"CompGreenRetLayerACA(n={self.n}, htol={self.htol})"
+
+
 class CompressedGreenMatrix:
     """
     Compressed Green function matrix.

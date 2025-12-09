@@ -473,3 +473,357 @@ def coverlayer(eps_layer, thickness, eps_core=None):
         Cover layer object
     """
     return CoverLayer(eps_layer, thickness, eps_core)
+
+
+def refine(p, ind):
+    """
+    Create refinement function for Green function initialization.
+
+    Green function elements for neighbor cover layer elements are refined
+    through polar integration.
+
+    Parameters
+    ----------
+    p : ComParticle
+        Composite particle object.
+    ind : ndarray
+        Particle indices for refinement, shape (n, 2).
+
+    Returns
+    -------
+    callable
+        Refinement function for Green function initialization.
+    """
+    # Symmetrize indices
+    ind = np.unique(np.vstack([ind, ind[:, ::-1]]), axis=0)
+
+    def refine_func(obj, g, f):
+        """Refinement function that dispatches to static or retarded."""
+        from .green_stat import GreenStat
+        from .green_ret import GreenRet
+
+        if isinstance(obj, GreenStat):
+            return refinestat(obj, g, f, p, ind)
+        elif isinstance(obj, GreenRet):
+            return refineret(obj, g, f, p, ind)
+        else:
+            raise ValueError(f"Unknown Green function class: {type(obj)}")
+
+    return refine_func
+
+
+def refinestat(obj, g, f, p, ind):
+    """
+    Refine quasistatic Green function for cover layer elements.
+
+    Refines Green function elements for neighbor cover layer elements
+    through polar integration.
+
+    Parameters
+    ----------
+    obj : GreenStat
+        Green function object.
+    g : ndarray
+        Green function elements for refinement.
+    f : ndarray
+        Surface derivative elements for refinement.
+    p : ComParticle
+        Composite particle object.
+    ind : ndarray
+        Particle indices for refinement.
+
+    Returns
+    -------
+    g : ndarray
+        Refined Green function.
+    f : ndarray
+        Refined surface derivative.
+    """
+    n = p.n_faces if hasattr(p, 'n_faces') else len(p.pos)
+
+    # Get indices
+    i1 = ind[:, 0]
+    i2 = ind[:, 1]
+
+    # Compute linear indices
+    lin_ind = i1 * n + i2
+
+    # Quadrature for polar integration
+    n_phi = 12
+    n_r = 6
+    phi_vals = np.linspace(0, 2 * np.pi, n_phi, endpoint=False)
+    r_vals = np.array([0.1, 0.3, 0.5, 0.7, 0.9, 0.95])
+    w_r = np.array([0.1, 0.2, 0.2, 0.2, 0.2, 0.1])
+
+    deriv_mode = getattr(obj, 'deriv', 'norm')
+
+    for k, (i, j) in enumerate(zip(i1, i2)):
+        pos_i = p.pos[i]
+        pos_j = p.pos[j]
+        nvec_i = p.nvec[i] if hasattr(p, 'nvec') else np.array([0, 0, 1])
+        area_j = p.area[j] if hasattr(p, 'area') else 1.0
+        face_radius = np.sqrt(area_j / np.pi)
+
+        g_sum = 0.0
+        fx_sum = 0.0
+        fy_sum = 0.0
+        fz_sum = 0.0
+
+        for ri, rj in enumerate(r_vals):
+            r_actual = rj * face_radius
+            for phi_k in phi_vals:
+                # Integration point on face j
+                dx = r_actual * np.cos(phi_k)
+                dy = r_actual * np.sin(phi_k)
+                pos_q = pos_j + np.array([dx, dy, 0])
+
+                # Distance vector
+                x = pos_i[0] - pos_q[0]
+                y = pos_i[1] - pos_q[1]
+                z = pos_i[2] - pos_q[2]
+                r = np.sqrt(x**2 + y**2 + z**2)
+
+                if r < 1e-10:
+                    continue
+
+                weight = w_r[ri] * r_actual * (2 * np.pi / n_phi)
+
+                # Green function
+                g_sum += weight / r
+
+                # Derivatives
+                fx_sum -= weight * x / r**3
+                fy_sum -= weight * y / r**3
+                fz_sum -= weight * z / r**3
+
+        g.flat[lin_ind[k]] = g_sum
+
+        if deriv_mode == 'cart':
+            f[lin_ind[k], 0] = fx_sum
+            f[lin_ind[k], 1] = fy_sum
+            f[lin_ind[k], 2] = fz_sum
+        else:
+            f.flat[lin_ind[k]] = (fx_sum * nvec_i[0] +
+                                  fy_sum * nvec_i[1] +
+                                  fz_sum * nvec_i[2])
+
+    return g, f
+
+
+def refineret(obj, g, f, p, ind):
+    """
+    Refine retarded Green function for cover layer elements.
+
+    Refines Green function elements for neighbor cover layer elements
+    through polar integration.
+
+    Parameters
+    ----------
+    obj : GreenRet
+        Green function object.
+    g : ndarray
+        Green function elements for refinement.
+    f : ndarray
+        Surface derivative elements for refinement.
+    p : ComParticle
+        Composite particle object.
+    ind : ndarray
+        Particle indices for refinement.
+
+    Returns
+    -------
+    g : ndarray
+        Refined Green function.
+    f : ndarray
+        Refined surface derivative.
+    """
+    n = p.n_faces if hasattr(p, 'n_faces') else len(p.pos)
+    order = getattr(obj, 'order', 0)
+
+    i1 = ind[:, 0]
+    i2 = ind[:, 1]
+    lin_ind = i1 * n + i2
+
+    n_phi = 12
+    n_r = 6
+    phi_vals = np.linspace(0, 2 * np.pi, n_phi, endpoint=False)
+    r_vals = np.array([0.1, 0.3, 0.5, 0.7, 0.9, 0.95])
+    w_r = np.array([0.1, 0.2, 0.2, 0.2, 0.2, 0.1])
+
+    deriv_mode = getattr(obj, 'deriv', 'norm')
+
+    for k, (i, j) in enumerate(zip(i1, i2)):
+        pos_i = p.pos[i]
+        pos_j = p.pos[j]
+        nvec_i = p.nvec[i] if hasattr(p, 'nvec') else np.array([0, 0, 1])
+        area_j = p.area[j] if hasattr(p, 'area') else 1.0
+        face_radius = np.sqrt(area_j / np.pi)
+
+        # Distance between face centroids
+        vec0 = pos_j - pos_i
+        r0 = np.linalg.norm(vec0)
+
+        # Arrays for different orders
+        g_orders = np.zeros(order + 1, dtype=complex)
+        f_orders = np.zeros(order + 1, dtype=complex) if deriv_mode == 'norm' else np.zeros((order + 1, 3), dtype=complex)
+
+        for ri, rj in enumerate(r_vals):
+            r_actual = rj * face_radius
+            for phi_k in phi_vals:
+                dx = r_actual * np.cos(phi_k)
+                dy = r_actual * np.sin(phi_k)
+                pos_q = pos_j + np.array([dx, dy, 0])
+
+                x = pos_i[0] - pos_q[0]
+                y = pos_i[1] - pos_q[1]
+                z = pos_i[2] - pos_q[2]
+                r = np.sqrt(x**2 + y**2 + z**2)
+
+                if r < 1e-10:
+                    continue
+
+                weight = w_r[ri] * r_actual * (2 * np.pi / n_phi)
+
+                # Taylor expansion terms
+                for ord_i in range(order + 1):
+                    factorial_ord = np.math.factorial(ord_i)
+                    g_orders[ord_i] += weight * (r - r0)**ord_i / (r * factorial_ord)
+
+                # Surface derivative
+                in_prod = x * nvec_i[0] + y * nvec_i[1] + z * nvec_i[2]
+
+                if deriv_mode == 'norm':
+                    f_orders[0] -= weight * in_prod / r**3
+                    for ord_i in range(1, order + 1):
+                        fact_ord = np.math.factorial(ord_i)
+                        fact_ord_m1 = np.math.factorial(ord_i - 1)
+                        f_orders[ord_i] += weight * in_prod * (
+                            (r - r0)**ord_i / (r**3 * fact_ord) +
+                            (r - r0)**(ord_i - 1) / (r**2 * fact_ord_m1)
+                        )
+                else:
+                    f_orders[0, :] -= weight * np.array([x, y, z]) / r**3
+                    for ord_i in range(1, order + 1):
+                        fact_ord = np.math.factorial(ord_i)
+                        fact_ord_m1 = np.math.factorial(ord_i - 1)
+                        factor = (-(r - r0)**ord_i / (r**3 * fact_ord) +
+                                  (r - r0)**(ord_i - 1) / (r**2 * fact_ord_m1))
+                        f_orders[ord_i, :] += weight * np.array([x, y, z]) * factor
+
+        # Store results
+        for ord_i in range(order + 1):
+            if g.ndim == 2:
+                g[lin_ind[k], ord_i] = g_orders[ord_i]
+            else:
+                g.flat[lin_ind[k]] = g_orders[0]
+
+            if deriv_mode == 'norm':
+                if f.ndim == 2:
+                    f[lin_ind[k], ord_i] = f_orders[ord_i]
+                else:
+                    f.flat[lin_ind[k]] = f_orders[0]
+            else:
+                if f.ndim == 3:
+                    f[lin_ind[k], :, ord_i] = f_orders[ord_i, :]
+                else:
+                    f[lin_ind[k], :] = f_orders[0, :]
+
+    return g, f
+
+
+def shift(p1, d, nvec=None):
+    """
+    Shift boundary for creation of cover layer structure.
+
+    Parameters
+    ----------
+    p1 : Particle
+        Original particle.
+    d : float or ndarray
+        Shift distance. If scalar, uniform shift; if array, per-vertex shift.
+    nvec : ndarray, optional
+        Direction vectors for shifting. If None, uses interpolated normals.
+
+    Returns
+    -------
+    Particle
+        Shifted particle boundary.
+    """
+    from ..particles import Particle
+
+    verts = p1.verts.copy()
+    faces = p1.faces.copy()
+
+    n_verts = len(verts)
+
+    # Handle scalar vs array distance
+    if np.isscalar(d):
+        d = np.full(n_verts, d)
+    else:
+        d = np.asarray(d)
+        if len(d) != n_verts:
+            raise ValueError(f"d must have length {n_verts}, got {len(d)}")
+
+    # Get normal vectors
+    if nvec is None:
+        # Interpolate face normals to vertices
+        nvec = _interp_normals_to_verts(p1)
+    else:
+        nvec = np.asarray(nvec)
+        if nvec.shape != (n_verts, 3):
+            raise ValueError(f"nvec must have shape ({n_verts}, 3)")
+
+    # Normalize
+    nvec_norm = nvec / (np.linalg.norm(nvec, axis=1, keepdims=True) + 1e-10)
+
+    # Handle duplicate vertices
+    _, i1, i2 = np.unique(np.round(verts, 4), axis=0, return_index=True, return_inverse=True)
+
+    # Shift vertices
+    verts_shifted = verts + d[:, np.newaxis] * nvec_norm[i1[i2]]
+
+    return Particle(verts_shifted, faces)
+
+
+def _interp_normals_to_verts(p):
+    """
+    Interpolate face normals to vertices.
+
+    Parameters
+    ----------
+    p : Particle
+        Particle with face normals.
+
+    Returns
+    -------
+    ndarray
+        Vertex normals, shape (n_verts, 3).
+    """
+    nvec_faces = p.nvec
+    verts = p.verts
+    faces = p.faces
+
+    n_verts = len(verts)
+    nvec_verts = np.zeros((n_verts, 3))
+    counts = np.zeros(n_verts)
+
+    # Average face normals at each vertex
+    for i, face in enumerate(faces):
+        for j in range(len(face)):
+            if face[j] < 0 or np.isnan(face[j]):
+                continue
+            v_idx = int(face[j])
+            if v_idx < n_verts:
+                nvec_verts[v_idx] += nvec_faces[i]
+                counts[v_idx] += 1
+
+    # Normalize
+    counts[counts == 0] = 1
+    nvec_verts /= counts[:, np.newaxis]
+
+    # Renormalize to unit vectors
+    norms = np.linalg.norm(nvec_verts, axis=1, keepdims=True)
+    norms[norms < 1e-10] = 1.0
+    nvec_verts /= norms
+
+    return nvec_verts

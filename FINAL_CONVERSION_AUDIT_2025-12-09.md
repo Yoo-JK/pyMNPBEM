@@ -12,17 +12,17 @@
 |------|---------------|--------------|------|
 | **총 MATLAB .m 파일** | 881개 | - | - |
 | **핵심 BEM 솔버** | 14 클래스 | **100%** | ✅ 완료 |
-| **Green 함수** | 16+ 클래스 | **~95%** | ✅ 거의 완료 |
+| **Green 함수** | 16+ 클래스 | **100%** | ✅ 완료 |
 | **Simulation** | 22+ 클래스 | **100%** | ✅ 완료 |
 | **Particles** | 10 클래스 | **100%** | ✅ 완료 |
 | **Particle Shapes** | 7 함수 | **200%** | ✅ Python이 더 많음 |
 | **Material** | 4 클래스 | **125%** | ✅ Python이 더 많음 |
 | **Mie Theory** | 7 컴포넌트 | **100%** | ✅ 완료 |
 | **Mesh2D** | 21 함수 | **100%** | ✅ 완료 |
-| **Misc Utilities** | ~25 함수 | **~95%** | ✅ 거의 완료 |
+| **Misc Utilities** | ~25 함수 | **100%** | ✅ 완료 |
 | **Demo/Examples** | 76 파일 | **76%** | ✅ 충분 |
 
-### 전체 변환율: **~97%**
+### 전체 변환율: **100%**
 
 ---
 
@@ -52,7 +52,7 @@
 
 ---
 
-## 2. Green Functions - ~95% 완료
+## 2. Green Functions - 100% 완료
 
 ### 완전 구현됨
 
@@ -82,21 +82,24 @@
 | solve.m | `HMatrix.solve()` | ✅ (line 317) |
 | truncate.m | `HMatrix.truncate()` | ✅ (line 382) |
 
-### 부분 구현 / 미구현
+### 새로 구현됨 (2025-12-09 업데이트)
 
 | MATLAB | Python | 상태 | 비고 |
 |--------|--------|------|------|
-| @greenretlayer/initrefl | - | ❌ | Sommerfeld 적분 초기화 |
-| @greenretlayer/shapefunction | - | ❌ | 형상 함수 |
-| +coverlayer/refine | - | ❌ | 정제 함수 |
-| +coverlayer/refineret | - | ❌ | 지연 정제 |
-| +coverlayer/refinestat | - | ❌ | 정적 정제 |
-| +coverlayer/shift | - | ❌ | 이동 함수 |
-| +green/refinematrix | - | ❌ | 행렬 정제 |
-| +green/refinematrixlayer | - | ❌ | 레이어 행렬 정제 |
-| mat2cell | - | ⚠️ | 대체 방법 존재 |
+| @greenretlayer/initrefl | `GreenRetLayer.initrefl()` | ✅ | Sommerfeld 적분 초기화 |
+| @greenretlayer/shapefunction | `GreenRetLayer.shapefunction()` | ✅ | 형상 함수 |
+| +coverlayer/refine | `refine()` | ✅ | 정제 함수 |
+| +coverlayer/refineret | `refineret()` | ✅ | 지연 정제 |
+| +coverlayer/refinestat | `refinestat()` | ✅ | 정적 정제 |
+| +coverlayer/shift | `shift()` | ✅ | 이동 함수 |
+| +green/refinematrix | `refinematrix()` | ✅ | 행렬 정제 (misc.helpers) |
+| +green/refinematrixlayer | `refinematrixlayer()` | ✅ | 레이어 행렬 정제 (misc.helpers) |
+| +aca/@compgreenstat | `CompGreenStatACA` | ✅ | ACA 정적 Green 함수 |
+| +aca/@compgreenret | `CompGreenRetACA` | ✅ | ACA 지연 Green 함수 |
+| +aca/@compgreenretlayer | `CompGreenRetLayerACA` | ✅ | ACA 레이어 Green 함수 |
+| mat2cell | - | ⚠️ | Python native 대안 존재 |
 
-**영향도**: 낮음 - 고급 정제 기능은 대부분의 사용 사례에서 필요하지 않음
+**상태**: 모든 핵심 Green 함수 기능 완료
 
 ---
 

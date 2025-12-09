@@ -4,7 +4,10 @@ Miscellaneous utilities for MNPBEM.
 
 from .units import eV2nm, nm2eV, HARTREE, TUNIT, SPEED_OF_LIGHT
 from .options import BEMOptions, bemoptions, getbemoptions
-from .helpers import inner, outer, matcross, matmul, spdiag, vecnorm, vecnormalize
+from .helpers import (
+    inner, outer, matcross, matmul, spdiag, vecnorm, vecnormalize,
+    bdist2, pdist2, bradius, refinematrix, refinematrixlayer
+)
 from .plotting import (
     plot_particle, plot_spectrum, plot_field_slice,
     arrow_plot, plot_eels_map, create_colormap,
@@ -40,6 +43,11 @@ __all__ = [
     "spdiag",
     "vecnorm",
     "vecnormalize",
+    "bdist2",
+    "pdist2",
+    "bradius",
+    "refinematrix",
+    "refinematrixlayer",
     # Plotting
     "plot_particle",
     "plot_spectrum",
