@@ -184,6 +184,75 @@ class PlaneWaveStatLayer(PlaneWaveStat):
 
         return field
 
+    def decompose(self, direction: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Decompose plane wave into TE (s) and TM (p) polarized components.
+
+        For a plane wave with arbitrary polarization, this method decomposes
+        it into transverse electric (TE/s-polarized) and transverse magnetic
+        (TM/p-polarized) components relative to the plane of incidence.
+
+        Parameters
+        ----------
+        direction : ndarray, optional
+            Propagation direction. If None, assumes normal incidence (0, 0, 1).
+
+        Returns
+        -------
+        pol_te : ndarray
+            TE (s-polarized) component of polarization (n_exc, 3).
+            Perpendicular to plane of incidence.
+        pol_tm : ndarray
+            TM (p-polarized) component of polarization (n_exc, 3).
+            In plane of incidence.
+
+        Notes
+        -----
+        For a wave propagating in direction k with polarization E:
+        - TE (s): E_s = (k x z_hat) / |k x z_hat| × E component
+        - TM (p): E_p = (k x (k x z_hat)) / |k x (k x z_hat)| × E component
+
+        At normal incidence (k || z_hat), the decomposition is arbitrary
+        and we use x and y as reference directions.
+        """
+        if direction is None:
+            direction = np.array([0, 0, 1])
+
+        direction = np.atleast_1d(direction).astype(float)
+        direction = direction / np.linalg.norm(direction)
+
+        z_hat = np.array([0, 0, 1])
+
+        # Check if at normal incidence
+        cos_theta = np.abs(np.dot(direction, z_hat))
+
+        pol_te = np.zeros_like(self.pol)
+        pol_tm = np.zeros_like(self.pol)
+
+        if cos_theta > 0.9999:
+            # Normal incidence: use x-y decomposition
+            # s-polarization: y-direction
+            # p-polarization: x-direction
+            for i, pol in enumerate(self.pol):
+                pol_te[i] = np.array([0, pol[1], 0])  # y-component
+                pol_tm[i] = np.array([pol[0], 0, pol[2]])  # x,z-components
+        else:
+            # General case: decompose relative to plane of incidence
+            # TE direction: perpendicular to plane of incidence (k, z)
+            te_dir = np.cross(direction, z_hat)
+            te_dir = te_dir / np.linalg.norm(te_dir)
+
+            # TM direction: in plane of incidence, perpendicular to k
+            tm_dir = np.cross(direction, te_dir)
+            tm_dir = tm_dir / np.linalg.norm(tm_dir)
+
+            for i, pol in enumerate(self.pol):
+                # Project polarization onto TE and TM directions
+                pol_te[i] = np.dot(pol, te_dir) * te_dir
+                pol_tm[i] = np.dot(pol, tm_dir) * tm_dir
+
+        return pol_te, pol_tm
+
     def __repr__(self) -> str:
         return f"PlaneWaveStatLayer(pol={self.pol.tolist()}, layer={self.layer})"
 

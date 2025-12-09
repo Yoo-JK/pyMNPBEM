@@ -330,6 +330,225 @@ class DipoleRet:
 
         return p_ind
 
+    def scattering(self, sig, spec=None):
+        """
+        Compute scattering cross section for dipole excitation.
+
+        The scattering cross section is computed from the far-field
+        radiation pattern using the optical theorem.
+
+        Parameters
+        ----------
+        sig : Solution
+            BEM solution with surface charges and currents.
+        spec : Spectrum, optional
+            Spectrum object with directions at infinity.
+            If None, uses default angular integration.
+
+        Returns
+        -------
+        sca : ndarray
+            Total scattering cross section for each dipole.
+        dsca : ndarray or CompStruct, optional
+            Differential scattering cross section.
+        """
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
+
+        # Get particle and surface data
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise ValueError("Cannot find particle in solution")
+
+        pos = particle.pos if hasattr(particle, 'pos') else particle.pc.pos
+        area = particle.area if hasattr(particle, 'area') else particle.pc.area
+        nvec = particle.nvec if hasattr(particle, 'nvec') else particle.pc.nvec
+        sigma = sig.sig if hasattr(sig, 'sig') else sig.get('sig')
+
+        # Wave number
+        k = 2 * np.pi / wavelength
+
+        # If spectrum provided, compute far-field on that grid
+        if spec is not None and hasattr(spec, 'pinfty'):
+            # Compute far-field at given directions
+            far = self._compute_farfield(sig, spec)
+
+            # Get surface at infinity
+            pinfty = spec.pinfty
+            directions = pinfty.nvec if hasattr(pinfty, 'nvec') else pinfty
+            area_ff = pinfty.area if hasattr(pinfty, 'area') else np.ones(len(directions))
+
+            # Poynting vector: S = 0.5 * Re(E x H*)
+            e_ff = far.get('e') if hasattr(far, 'get') else far.e
+            h_ff = far.get('h') if hasattr(far, 'get') else far.h
+
+            dsca = np.zeros((len(directions), self.n_dip))
+            for i in range(self.n_dip):
+                if e_ff.ndim == 3:
+                    e_i = e_ff[:, :, i]
+                    h_i = h_ff[:, :, i]
+                else:
+                    e_i = e_ff
+                    h_i = h_ff
+
+                # Poynting vector in normal direction
+                poynting = 0.5 * np.real(
+                    np.sum(directions * np.cross(e_i, np.conj(h_i)), axis=1)
+                )
+                dsca[:, i] = poynting
+
+            # Total scattering = integral of dsca over solid angle
+            sca = np.sum(dsca * area_ff[:, np.newaxis], axis=0)
+
+            return sca, dsca
+        else:
+            # Default: use induced dipole approximation for small particles
+            # Scattering cross section from Rayleigh formula
+            p_ind = self._induced_dipole(sig)
+
+            sca = np.zeros(self.n_dip)
+            for i in range(self.n_dip):
+                p_total = self.dip[i] + p_ind[i]
+                # sigma_sca = (k^4 / 6*pi) * |p|^2
+                sca[i] = k**4 / (6 * np.pi) * np.abs(np.dot(p_total, np.conj(p_total)))
+
+            return sca
+
+    def extinction(self, sig, exc=None):
+        """
+        Compute extinction cross section for dipole excitation.
+
+        Extinction = Scattering + Absorption
+
+        Uses the optical theorem: sigma_ext = (4*pi*k) * Im(f(0))
+        where f(0) is the forward scattering amplitude.
+
+        Parameters
+        ----------
+        sig : Solution
+            BEM solution.
+        exc : Excitation, optional
+            Incident field excitation.
+
+        Returns
+        -------
+        ext : ndarray
+            Extinction cross section for each dipole.
+        """
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
+        k = 2 * np.pi / wavelength
+
+        # Get scattered field at dipole position
+        E_sca = self._scattered_field_at_dipole(sig)
+
+        ext = np.zeros(self.n_dip)
+
+        for i in range(self.n_dip):
+            p = self.dip[i]
+            E = E_sca[i]
+
+            # Extinction from optical theorem
+            # sigma_ext = (4*pi*k) * Im(p* . E_sca) / |E_inc|^2
+            # For dipole excitation, normalized by dipole moment
+            ext[i] = 4 * np.pi * k * np.imag(np.dot(np.conj(p), E))
+
+        return ext
+
+    def absorption(self, sig, exc=None):
+        """
+        Compute absorption cross section for dipole excitation.
+
+        Absorption = Extinction - Scattering
+
+        Parameters
+        ----------
+        sig : Solution
+            BEM solution.
+        exc : Excitation, optional
+            Incident field excitation.
+
+        Returns
+        -------
+        abs : ndarray
+            Absorption cross section for each dipole.
+        """
+        ext = self.extinction(sig, exc)
+        sca_result = self.scattering(sig)
+
+        # Handle both return formats of scattering
+        if isinstance(sca_result, tuple):
+            sca = sca_result[0]
+        else:
+            sca = sca_result
+
+        return ext - sca
+
+    def _compute_farfield(self, sig, spec):
+        """
+        Compute far-field from surface charges/currents.
+
+        Parameters
+        ----------
+        sig : Solution
+            BEM solution.
+        spec : Spectrum
+            Spectrum with directions at infinity.
+
+        Returns
+        -------
+        CompStruct
+            Far-field E and H.
+        """
+        from ..particles import CompStruct
+
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
+        k = 2 * np.pi / wavelength
+
+        # Get particle data
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise ValueError("Cannot find particle")
+
+        pos = particle.pos if hasattr(particle, 'pos') else particle.pc.pos
+        area = particle.area if hasattr(particle, 'area') else particle.pc.area
+        sigma = sig.sig if hasattr(sig, 'sig') else sig.get('sig')
+
+        # Get directions
+        pinfty = spec.pinfty
+        directions = pinfty.nvec if hasattr(pinfty, 'nvec') else np.atleast_2d(pinfty)
+        n_dir = len(directions)
+
+        # Allocate far-fields
+        e = np.zeros((n_dir, 3, self.n_dip), dtype=complex)
+        h = np.zeros((n_dir, 3, self.n_dip), dtype=complex)
+
+        for i in range(self.n_dip):
+            if sigma.ndim == 1:
+                charge = sigma
+            else:
+                charge = sigma[:, i] if i < sigma.shape[1] else sigma[:, 0]
+
+            for j, ndir in enumerate(directions):
+                # Far-field phase: exp(-i*k*n.r)
+                phase = np.exp(-1j * k * np.dot(pos, ndir))
+
+                # Far-field from surface charges (electric dipole radiation)
+                # E_ff ~ k^2 * sum(sigma * area * (n x r) x n * phase)
+                for m in range(len(pos)):
+                    r_perp = pos[m] - np.dot(pos[m], ndir) * ndir
+                    e_contrib = k**2 * charge[m] * area[m] * r_perp * phase[m]
+                    e[j, :, i] += e_contrib
+
+                # Magnetic field from E: H = n x E / Z0
+                h[j, :, i] = np.cross(ndir, e[j, :, i])
+
+        return CompStruct(pinfty, wavelength, e=e, h=h)
+
 
 class DipoleRetExcitation:
     """

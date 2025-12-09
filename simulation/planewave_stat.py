@@ -231,6 +231,86 @@ class PlaneWaveStat:
         """Alias for extinction."""
         return self.sca(sig) + self.abs(sig)
 
+    def farfield(self, sig: CompStruct, directions: Optional[np.ndarray] = None) -> CompStruct:
+        """
+        Compute far-field electromagnetic fields from scattered surface charges.
+
+        Based on Jackson Eq. (9.19) for radiation from an oscillating dipole.
+        The far-field is computed from the induced dipole moment of the
+        surface charge distribution.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        directions : ndarray, optional
+            Observation directions (n_dir, 3). If None, uses default
+            unit sphere directions.
+
+        Returns
+        -------
+        CompStruct
+            Object containing far-field 'e' and 'h' fields.
+            Shape of fields: (n_dir, 3, n_exc)
+        """
+        # Get directions
+        if directions is None:
+            # Default: unit sphere with reasonable resolution
+            n_theta = 36
+            n_phi = 72
+            theta = np.linspace(0, np.pi, n_theta)
+            phi = np.linspace(0, 2 * np.pi, n_phi, endpoint=False)
+            THETA, PHI = np.meshgrid(theta, phi)
+            directions = np.stack([
+                np.sin(THETA) * np.cos(PHI),
+                np.sin(THETA) * np.sin(PHI),
+                np.cos(THETA)
+            ], axis=-1).reshape(-1, 3)
+
+        directions = np.atleast_2d(directions)
+        n_dir = len(directions)
+
+        # Normalize directions
+        dir_norm = np.linalg.norm(directions, axis=1, keepdims=True)
+        directions = directions / np.where(dir_norm < 1e-10, 1, dir_norm)
+
+        # Get wavenumber in medium
+        eps_func = sig.p.eps[self.medium - 1]
+        eps_b, k = eps_func(sig.enei)
+        nb = np.sqrt(eps_b)
+
+        # Induced dipole moment: p = integral(r * sigma * dA)
+        area = sig.p.area
+        pos = sig.p.pos
+        charges = sig.get('sig')
+
+        # dip[k, j] = sum_i pos[i, k] * area[i] * sig[i, j]
+        weighted_pos = pos * area[:, np.newaxis]  # (n_faces, 3)
+        dip = weighted_pos.T @ charges  # (3, n_exc)
+
+        # Allocate far-field arrays
+        n_exc = self.n_exc
+        e = np.zeros((n_dir, 3, n_exc), dtype=complex)
+        h = np.zeros((n_dir, 3, n_exc), dtype=complex)
+
+        # Far-field calculation: Jackson Eq. (9.19)
+        # H = nb * k^2 * (n x p)
+        # E = -n x H / nb
+        for i, ndir in enumerate(directions):
+            for j in range(n_exc):
+                p = dip[:, j]
+
+                # H = nb * k^2 * (n x p)
+                h_ff = nb * k**2 * np.cross(ndir, p)
+
+                # E = -n x H / nb
+                e_ff = -np.cross(ndir, h_ff) / nb
+
+                e[i, :, j] = e_ff
+                h[i, :, j] = h_ff
+
+        return CompStruct(sig.p, sig.enei, e=e, h=h)
+
     def __repr__(self) -> str:
         return f"PlaneWaveStat(pol={self.pol.tolist()}, medium={self.medium})"
 

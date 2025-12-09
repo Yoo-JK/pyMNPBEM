@@ -279,6 +279,274 @@ class EELSStat:
 
         return x, y, loss_map
 
+    def bulkloss(self, p: ComParticle, enei: float, phiout: float = 0.01) -> np.ndarray:
+        """
+        Compute EELS bulk loss probability.
+
+        Based on Garcia de Abajo, Rev. Mod. Phys. 82, 209 (2010), Eq. (18).
+        This computes the energy loss probability from bulk material
+        traversed by the electron beam.
+
+        Parameters
+        ----------
+        p : ComParticle
+            Compound particle (used for dielectric functions and path length).
+        enei : float
+            Wavelength in nm.
+        phiout : float, optional
+            Collection angle in radians (default: 0.01 rad ~ 0.57 deg).
+
+        Returns
+        -------
+        ndarray
+            Bulk loss probability for each beam position (1/eV).
+
+        Notes
+        -----
+        The bulk loss depends on:
+        - The dielectric function of the material
+        - The electron velocity
+        - The path length through the material
+        - The collection angle (phiout)
+        """
+        # Physical constants in atomic units
+        bohr = 0.05292  # Bohr radius in nm
+        hartree = 27.211  # 2 * Rydberg in eV
+        fine = 1 / 137.036  # Fine structure constant
+        eV2nm_local = 1239.84193  # eV to nm conversion
+
+        # Photon energy in eV
+        ene = eV2nm_local / enei
+
+        # Rest mass of electron in eV
+        mass = 0.51e6
+
+        # Get dielectric functions for different media
+        if hasattr(p, 'eps'):
+            eps_list = []
+            for eps_func in p.eps:
+                if callable(eps_func):
+                    eps_list.append(eps_func(enei))
+                else:
+                    eps_list.append(eps_func)
+            eps = np.array(eps_list)
+        else:
+            eps = np.array([1.0])
+
+        # Wavenumber of electron beam
+        q = 2 * np.pi / (enei * self.velocity)
+
+        # Cutoff wavenumber (depends on collection angle)
+        qc = q * np.sqrt((mass / ene) ** 2 * self.velocity ** 2 * phiout ** 2 + 1)
+
+        # Wavenumber of light in each medium
+        k = 2 * np.pi / enei * np.sqrt(eps)
+
+        # Compute path length through each medium
+        path_length = self._compute_path_length(p)
+
+        # Bulk loss probability [Eq. (18) from Garcia de Abajo]
+        # P_bulk = (alpha / (pi * v^2)) * Im[(v^2 - 1/eps) * log((qc^2 - k^2)/(q^2 - k^2))] * L
+        # where alpha is fine structure constant
+
+        pbulk = np.zeros(self.n_beams)
+
+        for i in range(self.n_beams):
+            path_i = path_length[i] if isinstance(path_length, np.ndarray) else path_length
+
+            # Sum over all media
+            for j, eps_j in enumerate(eps):
+                if np.abs(eps_j) < 1e-10:
+                    continue
+
+                k_j = k[j]
+
+                # Logarithm argument
+                num = qc ** 2 - k_j ** 2
+                den = q ** 2 - k_j ** 2
+
+                # Avoid numerical issues
+                if np.abs(den) < 1e-20:
+                    continue
+
+                log_arg = num / den
+                if np.real(log_arg) <= 0:
+                    log_val = np.log(np.abs(log_arg)) + 1j * np.pi
+                else:
+                    log_val = np.log(log_arg)
+
+                # Bulk loss contribution
+                prefactor = fine ** 2 / (bohr * hartree * np.pi * self.velocity ** 2)
+                term = (self.velocity ** 2 - 1.0 / eps_j) * log_val
+                pbulk[i] += prefactor * np.imag(term) * path_i
+
+        return pbulk
+
+    def _compute_path_length(self, p: ComParticle) -> np.ndarray:
+        """
+        Compute path length of electron beam through particle.
+
+        Parameters
+        ----------
+        p : ComParticle
+            Particle geometry.
+
+        Returns
+        -------
+        ndarray
+            Path length for each beam position.
+        """
+        # Get particle vertices and faces
+        if hasattr(p, 'verts') and hasattr(p, 'faces'):
+            verts = p.verts
+            faces = p.faces
+        elif hasattr(p, 'pc'):
+            verts = p.pc.verts if hasattr(p.pc, 'verts') else None
+            faces = p.pc.faces if hasattr(p.pc, 'faces') else None
+        else:
+            # Estimate from bounding box
+            if hasattr(p, 'pos'):
+                z_extent = p.pos[:, 2].max() - p.pos[:, 2].min()
+                return np.ones(self.n_beams) * z_extent
+            return np.ones(self.n_beams) * 10.0  # Default 10 nm
+
+        if verts is None:
+            if hasattr(p, 'pos'):
+                z_extent = p.pos[:, 2].max() - p.pos[:, 2].min()
+                return np.ones(self.n_beams) * z_extent
+            return np.ones(self.n_beams) * 10.0
+
+        path_length = np.zeros(self.n_beams)
+
+        for i, r_beam in enumerate(self.impact):
+            # Ray-casting along z-axis to find intersections
+            x0, y0 = r_beam[0], r_beam[1]
+
+            # Find z-coordinates where ray intersects particle surface
+            z_intersections = []
+
+            # Simple approach: find min/max z of faces near beam
+            for face in faces:
+                tri_verts = verts[face]
+
+                # Check if beam passes through triangle's xy projection
+                if self._point_in_triangle_2d(x0, y0, tri_verts[:, :2]):
+                    # Interpolate z at beam position
+                    z_int = self._interpolate_z(x0, y0, tri_verts)
+                    if z_int is not None:
+                        z_intersections.append(z_int)
+
+            if len(z_intersections) >= 2:
+                z_intersections.sort()
+                # Path length is total traversed distance
+                path_length[i] = z_intersections[-1] - z_intersections[0]
+            elif len(z_intersections) == 1:
+                # Single intersection - estimate
+                path_length[i] = 0
+            else:
+                # No intersection - beam outside particle
+                path_length[i] = 0
+
+        return path_length
+
+    def _point_in_triangle_2d(self, px: float, py: float, tri: np.ndarray) -> bool:
+        """Check if point (px, py) is inside 2D triangle."""
+        def sign(p1, p2, p3):
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+
+        p = np.array([px, py])
+        v1, v2, v3 = tri[0], tri[1], tri[2]
+
+        d1 = sign(p, v1, v2)
+        d2 = sign(p, v2, v3)
+        d3 = sign(p, v3, v1)
+
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+
+        return not (has_neg and has_pos)
+
+    def _interpolate_z(self, px: float, py: float, tri: np.ndarray) -> float:
+        """Interpolate z-coordinate at point (px, py) on triangle."""
+        # Barycentric interpolation
+        v0 = tri[1] - tri[0]
+        v1 = tri[2] - tri[0]
+        v2 = np.array([px, py, 0]) - tri[0]
+
+        d00 = v0[0] * v0[0] + v0[1] * v0[1]
+        d01 = v0[0] * v1[0] + v0[1] * v1[1]
+        d11 = v1[0] * v1[0] + v1[1] * v1[1]
+        d20 = v2[0] * v0[0] + v2[1] * v0[1]
+        d21 = v2[0] * v1[0] + v2[1] * v1[1]
+
+        denom = d00 * d11 - d01 * d01
+        if np.abs(denom) < 1e-10:
+            return None
+
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        u = 1.0 - v - w
+
+        if u >= 0 and v >= 0 and w >= 0:
+            return u * tri[0, 2] + v * tri[1, 2] + w * tri[2, 2]
+        return None
+
+    def field(self, p: ComParticle, enei: float) -> CompStruct:
+        """
+        Compute electric field from electron beam.
+
+        Parameters
+        ----------
+        p : ComParticle
+            Particle where field is computed.
+        enei : float
+            Wavelength in nm.
+
+        Returns
+        -------
+        CompStruct
+            Object containing electric field 'e'.
+        """
+        pos = p.pos
+        n_pos = len(pos)
+
+        omega = 2 * np.pi * SPEED_OF_LIGHT / enei
+
+        e = np.zeros((n_pos, self.n_beams, 3), dtype=complex)
+
+        for i, r_beam in enumerate(self.impact):
+            dx = pos[:, 0] - r_beam[0]
+            dy = pos[:, 1] - r_beam[1]
+            rho = np.sqrt(dx ** 2 + dy ** 2)
+            z = pos[:, 2]
+
+            rho = np.where(rho < 1e-10, 1e-10, rho)
+
+            from scipy.special import kv
+
+            arg = omega * rho / self.v / self.gamma_lorentz
+            phase = np.exp(1j * omega * z / self.v)
+
+            K0 = kv(0, arg)
+            K1 = kv(1, arg)
+
+            # Electric field components
+            prefactor = 2 * omega / (self.v ** 2 * self.gamma_lorentz ** 2)
+
+            # Radial component (perpendicular to beam)
+            rho_hat_x = dx / rho
+            rho_hat_y = dy / rho
+
+            E_rho = prefactor * K1 * phase
+
+            e[:, i, 0] = E_rho * rho_hat_x
+            e[:, i, 1] = E_rho * rho_hat_y
+
+            # Z component (parallel to beam)
+            e[:, i, 2] = 1j * prefactor / self.gamma_lorentz * K0 * phase
+
+        return CompStruct(p, enei, e=e)
+
     def __repr__(self) -> str:
         return f"EELSStat(n_beams={self.n_beams}, velocity={self.velocity})"
 

@@ -1021,5 +1021,252 @@ class Particle:
 
         return Particle(new_verts, new_faces, self.interp)
 
+    def deriv(self, func: np.ndarray, direction: str = 'n') -> np.ndarray:
+        """
+        Compute surface derivative of a function defined on faces.
+
+        This method computes directional derivatives of scalar or vector
+        fields defined on the particle surface.
+
+        Parameters
+        ----------
+        func : ndarray
+            Function values at face centroids. Shape (n_faces,) for scalar
+            or (n_faces, 3) for vector.
+        direction : str
+            Derivative direction:
+            - 'n': normal direction (outward derivative)
+            - 't1': first tangent direction
+            - 't2': second tangent direction
+            - 'grad': surface gradient (returns vector)
+
+        Returns
+        -------
+        ndarray
+            Derivative values. Shape depends on input and direction:
+            - Scalar input with 'n', 't1', 't2': shape (n_faces,)
+            - Scalar input with 'grad': shape (n_faces, 3)
+            - Vector input: shape (n_faces, 3)
+
+        Examples
+        --------
+        >>> # Compute normal derivative of potential
+        >>> phi = np.sin(particle.pos[:, 0])  # Scalar field
+        >>> dphi_dn = particle.deriv(phi, 'n')
+        >>>
+        >>> # Compute surface gradient
+        >>> grad_phi = particle.deriv(phi, 'grad')
+        """
+        func = np.atleast_1d(func)
+
+        if len(func) != self.n_faces:
+            raise ValueError(f"Function length {len(func)} != n_faces {self.n_faces}")
+
+        # Build face adjacency for gradient computation
+        # Find faces sharing vertices
+        vertex_faces = [[] for _ in range(self.n_verts)]
+        for i, face in enumerate(self.faces):
+            valid = ~np.isnan(face)
+            for v in face[valid].astype(int):
+                vertex_faces[v].append(i)
+
+        if direction == 'grad':
+            # Surface gradient using finite differences
+            grad = np.zeros((self.n_faces, 3))
+
+            for i in range(self.n_faces):
+                # Get neighboring faces
+                valid = ~np.isnan(self.faces[i])
+                verts_i = self.faces[i][valid].astype(int)
+
+                neighbors = set()
+                for v in verts_i:
+                    neighbors.update(vertex_faces[v])
+                neighbors.discard(i)
+                neighbors = list(neighbors)
+
+                if len(neighbors) == 0:
+                    continue
+
+                # Least squares fit for gradient
+                # f(r) = f(r0) + grad_f . (r - r0)
+                dr = self.pos[neighbors] - self.pos[i]  # (n_neigh, 3)
+                df = func[neighbors] - func[i]  # (n_neigh,) or (n_neigh, 3)
+
+                if func.ndim == 1:
+                    # Scalar: solve grad_f from least squares
+                    # df = dr @ grad_f  =>  grad_f = (dr^T dr)^-1 dr^T df
+                    try:
+                        grad[i] = np.linalg.lstsq(dr, df, rcond=None)[0]
+                    except np.linalg.LinAlgError:
+                        pass
+                else:
+                    # Vector: compute gradient for each component
+                    for j in range(3):
+                        df_j = func[neighbors, j] - func[i, j]
+                        try:
+                            grad[i, j] = np.linalg.lstsq(dr, df_j, rcond=None)[0][j]
+                        except np.linalg.LinAlgError:
+                            pass
+
+            # Project onto surface (remove normal component)
+            normal_comp = np.sum(grad * self.nvec, axis=1, keepdims=True)
+            grad = grad - normal_comp * self.nvec
+
+            return grad
+
+        elif direction == 'n':
+            # Normal derivative (requires neighboring face values)
+            deriv = np.zeros(self.n_faces)
+
+            for i in range(self.n_faces):
+                # Get neighbors and compute derivative
+                valid = ~np.isnan(self.faces[i])
+                verts_i = self.faces[i][valid].astype(int)
+
+                neighbors = set()
+                for v in verts_i:
+                    neighbors.update(vertex_faces[v])
+                neighbors.discard(i)
+                neighbors = list(neighbors)
+
+                if len(neighbors) == 0:
+                    continue
+
+                # Average difference weighted by distance
+                dr = self.pos[neighbors] - self.pos[i]
+                dist = np.linalg.norm(dr, axis=1)
+
+                # Project onto normal direction
+                normal_dist = np.dot(dr, self.nvec[i])
+
+                # Value difference
+                if func.ndim == 1:
+                    df = func[neighbors] - func[i]
+                else:
+                    df = np.linalg.norm(func[neighbors] - func[i], axis=1)
+
+                # Derivative estimate
+                valid_mask = np.abs(normal_dist) > 1e-10
+                if np.any(valid_mask):
+                    deriv[i] = np.mean(df[valid_mask] / normal_dist[valid_mask])
+
+            return deriv
+
+        elif direction in ['t1', 't2']:
+            # Tangent derivative
+            tvec = self.tvec1 if direction == 't1' else self.tvec2
+            deriv = np.zeros(self.n_faces)
+
+            for i in range(self.n_faces):
+                valid = ~np.isnan(self.faces[i])
+                verts_i = self.faces[i][valid].astype(int)
+
+                neighbors = set()
+                for v in verts_i:
+                    neighbors.update(vertex_faces[v])
+                neighbors.discard(i)
+                neighbors = list(neighbors)
+
+                if len(neighbors) == 0:
+                    continue
+
+                dr = self.pos[neighbors] - self.pos[i]
+                tang_dist = np.dot(dr, tvec[i])
+
+                if func.ndim == 1:
+                    df = func[neighbors] - func[i]
+                else:
+                    df = np.dot(func[neighbors] - func[i], tvec[i])
+
+                valid_mask = np.abs(tang_dist) > 1e-10
+                if np.any(valid_mask):
+                    deriv[i] = np.mean(df[valid_mask] / tang_dist[valid_mask])
+
+            return deriv
+
+        else:
+            raise ValueError(f"Unknown direction: {direction}. Use 'n', 't1', 't2', or 'grad'")
+
+    def interp(self, values: np.ndarray, points: np.ndarray,
+               method: str = 'nearest') -> np.ndarray:
+        """
+        Interpolate values from faces to arbitrary surface points.
+
+        Parameters
+        ----------
+        values : ndarray
+            Values at face centroids, shape (n_faces,) or (n_faces, m).
+        points : ndarray
+            Query points on surface, shape (n_points, 3).
+        method : str
+            Interpolation method:
+            - 'nearest': nearest neighbor (default)
+            - 'linear': linear interpolation from nearest faces
+            - 'idw': inverse distance weighting
+
+        Returns
+        -------
+        ndarray
+            Interpolated values at query points.
+
+        Examples
+        --------
+        >>> # Interpolate field to new points
+        >>> new_points = np.array([[0, 0, 5], [1, 0, 5]])
+        >>> interp_values = particle.interp(field_values, new_points)
+        """
+        values = np.atleast_1d(values)
+        points = np.atleast_2d(points)
+
+        if len(values) != self.n_faces:
+            raise ValueError(f"Values length {len(values)} != n_faces {self.n_faces}")
+
+        n_points = len(points)
+
+        if method == 'nearest':
+            # Find nearest face centroid for each point
+            from scipy.spatial import cKDTree
+            tree = cKDTree(self.pos)
+            _, indices = tree.query(points)
+
+            if values.ndim == 1:
+                return values[indices]
+            else:
+                return values[indices, :]
+
+        elif method == 'linear' or method == 'idw':
+            # Use k nearest neighbors with distance weighting
+            from scipy.spatial import cKDTree
+            tree = cKDTree(self.pos)
+
+            k = min(4, self.n_faces)  # 4 nearest neighbors
+            distances, indices = tree.query(points, k=k)
+
+            # Avoid division by zero
+            distances = np.maximum(distances, 1e-10)
+
+            if method == 'idw':
+                # Inverse distance weighting
+                weights = 1.0 / distances
+            else:
+                # Linear (barycentric-like)
+                weights = 1.0 / distances
+
+            # Normalize weights
+            weights = weights / weights.sum(axis=1, keepdims=True)
+
+            if values.ndim == 1:
+                result = np.sum(weights * values[indices], axis=1)
+            else:
+                result = np.zeros((n_points, values.shape[1]))
+                for j in range(values.shape[1]):
+                    result[:, j] = np.sum(weights * values[indices, j], axis=1)
+
+            return result
+
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'nearest', 'linear', or 'idw'")
+
     def __repr__(self) -> str:
         return f"Particle(n_verts={self.n_verts}, n_faces={self.n_faces}, interp='{self.interp}')"

@@ -225,6 +225,58 @@ class DipoleStatLayer(DipoleStat):
 
         return gamma_basic
 
+    def decayrate0(self, enei: float) -> np.ndarray:
+        """
+        Compute decay rate enhancement from substrate only (without particle).
+
+        This gives the modification of the decay rate due to the presence
+        of the substrate, without any nanoparticle effects.
+
+        Parameters
+        ----------
+        enei : float
+            Wavelength in nm.
+
+        Returns
+        -------
+        ndarray
+            Decay rate enhancement for each dipole orientation.
+            Value of 1.0 means no enhancement (free space).
+        """
+        if self.layer is None:
+            # No substrate: free-space decay rate
+            return np.ones(self.n_dip)
+
+        # Get image dipole properties
+        pt_image, dip_image, r_coeff = self._image_dipole(enei)
+
+        # Decay rate modification from image dipole interaction
+        gamma0 = np.ones(self.n_dip)
+
+        for i, (r0, r0_img, dip, dip_img) in enumerate(zip(self.pt, pt_image, self.dip, dip_image)):
+            # Distance between dipole and its image
+            dr = r0 - r0_img
+            d = np.linalg.norm(dr)
+
+            if d < 1e-10:
+                continue
+
+            d3 = d ** 3
+            d5 = d ** 5
+
+            # Electric field from image dipole at original dipole position
+            # E_image = r_coeff * (3*(p_img.r_hat)*r_hat - p_img) / (4*pi*d^3)
+            r_hat = dr / d
+            p_dot_r = np.dot(dip_img * r_coeff, r_hat)
+
+            E_image = (3 * p_dot_r * r_hat - dip_img * r_coeff) / (4 * np.pi * d3)
+
+            # Decay rate enhancement: 1 + 6*pi * Im(p* . E_image)
+            # For quasistatic case, this involves the reactive field
+            gamma0[i] = 1.0 + 6 * np.pi * np.real(np.dot(np.conj(dip), E_image))
+
+        return gamma0
+
     def __repr__(self) -> str:
         return f"DipoleStatLayer(n_dip={self.n_dip}, layer={self.layer})"
 

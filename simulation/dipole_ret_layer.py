@@ -310,6 +310,77 @@ class DipoleRetLayer(DipoleRet):
 
         return gamma
 
+    def decayrate0(self, wavelength: float) -> np.ndarray:
+        """
+        Compute decay rate enhancement from substrate only (without particle).
+
+        This gives the modification of the decay rate due to the presence
+        of the substrate interface, without any nanoparticle effects.
+        Uses the image dipole approximation for the near-field regime.
+
+        Parameters
+        ----------
+        wavelength : float
+            Wavelength in nm.
+
+        Returns
+        -------
+        ndarray
+            Decay rate enhancement for each dipole orientation.
+            Value of 1.0 means no enhancement (free space).
+        """
+        if self.layer is None:
+            return np.ones(self.n_dip)
+
+        z_interface = self.layer.z[0] if len(self.layer.z) > 0 else 0
+        r_s, r_p = self._fresnel_coefficients(wavelength, 0)
+
+        k = 2 * np.pi / wavelength
+
+        gamma0 = np.ones(self.n_dip)
+
+        for i in range(self.n_dip):
+            d = np.abs(self.pt[i, 2] - z_interface)  # Distance to interface
+
+            if d < 1e-10:
+                continue
+
+            # Dipole orientation components
+            dip_perp = self.dip[i, 2]  # Perpendicular (z) component
+            dip_para_sq = self.dip[i, 0]**2 + self.dip[i, 1]**2
+
+            # Normalized dipole (assuming unit magnitude)
+            dip_norm_sq = dip_perp**2 + dip_para_sq
+            if dip_norm_sq < 1e-10:
+                continue
+
+            dip_perp_sq = dip_perp**2 / dip_norm_sq
+            dip_para_sq = dip_para_sq / dip_norm_sq
+
+            # Near-field regime: decay rate modification
+            # For perpendicular dipole: gamma/gamma_0 = 1 + 3*Im(r_p) / (2*(kd)^3)
+            # For parallel dipole: gamma/gamma_0 = 1 + 3*Im(r_s) / (4*(kd)^3)
+            kd = k * d
+            kd3 = kd ** 3
+
+            if kd < 10:
+                # Near-field: use quasi-static approximation
+                gamma_perp = 1 + 3 * np.imag(r_p) / (2 * kd3)
+                gamma_para = 1 + 3 * np.imag(r_s) / (4 * kd3)
+            else:
+                # Far-field: oscillating terms average out
+                # Use retarded Green's function
+                exp_2ikd = np.exp(2j * kd)
+
+                # More accurate far-field expression
+                gamma_perp = 1 + 3 / 2 * np.imag(r_p * exp_2ikd) / kd
+                gamma_para = 1 + 3 / 4 * np.imag(r_s * exp_2ikd) / kd
+
+            # Combine perpendicular and parallel contributions
+            gamma0[i] = dip_perp_sq * gamma_perp + dip_para_sq * gamma_para
+
+        return gamma0
+
     def __call__(self, particle: ComParticle, wavelength: float):
         """
         Compute excitation for particle.
