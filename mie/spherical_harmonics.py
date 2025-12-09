@@ -460,3 +460,460 @@ def mie_efficiencies(
     Q_abs = Q_ext - Q_sca
 
     return Q_ext, Q_sca, Q_abs
+
+
+def sphtable(l_max: int, mode: str = 'full') -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generate tables of spherical harmonic degrees and orders.
+
+    Parameters
+    ----------
+    l_max : int
+        Maximum degree.
+    mode : str
+        'full' for all m from -l to l, 'pos' for m >= 0 only.
+
+    Returns
+    -------
+    ltab : ndarray
+        Array of degrees.
+    mtab : ndarray
+        Array of orders.
+    """
+    ltab = []
+    mtab = []
+
+    for l in range(1, l_max + 1):
+        if mode == 'full':
+            for m in range(-l, l + 1):
+                ltab.append(l)
+                mtab.append(m)
+        else:
+            for m in range(0, l + 1):
+                ltab.append(l)
+                mtab.append(m)
+
+    return np.array(ltab), np.array(mtab)
+
+
+def lglnodes(n: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute Legendre-Gauss-Lobatto nodes and weights.
+
+    Adapted from Greg von Winkel's MATLAB implementation.
+
+    Parameters
+    ----------
+    n : int
+        Number of nodes - 1 (polynomial degree).
+
+    Returns
+    -------
+    x : ndarray
+        Nodes on [-1, 1].
+    w : ndarray
+        Quadrature weights.
+    """
+    n1 = n + 1
+
+    # Initial guess using Chebyshev-Gauss-Lobatto nodes
+    x = np.cos(np.pi * np.arange(n + 1) / n)
+
+    # Legendre Vandermonde matrix
+    p = np.zeros((n1, n1))
+
+    # Newton-Raphson iteration
+    x_old = 2 * np.ones_like(x)
+
+    while np.max(np.abs(x - x_old)) > np.finfo(float).eps:
+        x_old = x.copy()
+        p[:, 0] = 1
+        p[:, 1] = x
+
+        for k in range(2, n1):
+            p[:, k] = ((2 * k - 1) * x * p[:, k - 1] - (k - 1) * p[:, k - 2]) / k
+
+        x = x_old - (x * p[:, n] - p[:, n - 1]) / (n1 * p[:, n])
+
+    # Compute weights
+    w = 2 / (n * n1 * p[:, n] ** 2)
+
+    return x, w
+
+
+def fac2(n: int) -> int:
+    """
+    Compute double factorial n!!.
+
+    Parameters
+    ----------
+    n : int
+        Argument.
+
+    Returns
+    -------
+    int
+        Double factorial.
+    """
+    if n <= 0:
+        return 1
+    if n % 2 == 0:
+        return int(np.prod(np.arange(2, n + 1, 2)))
+    else:
+        return int(np.prod(np.arange(1, n + 1, 2)))
+
+
+def riccati_bessel(z: complex, l_values: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute Riccati-Bessel functions for Mie coefficients.
+
+    Parameters
+    ----------
+    z : complex
+        Argument (k * r).
+    l_values : ndarray
+        Array of l values.
+
+    Returns
+    -------
+    j : ndarray
+        z * j_l(z) (Riccati-Bessel psi).
+    h : ndarray
+        z * h_l^(1)(z) (Riccati-Bessel xi).
+    zjp : ndarray
+        Derivative of z * j_l(z).
+    zhp : ndarray
+        Derivative of z * h_l^(1)(z).
+    """
+    l_values = np.atleast_1d(l_values)
+    n_l = len(l_values)
+
+    j = np.zeros(n_l, dtype=complex)
+    h = np.zeros(n_l, dtype=complex)
+    zjp = np.zeros(n_l, dtype=complex)
+    zhp = np.zeros(n_l, dtype=complex)
+
+    for i, l in enumerate(l_values):
+        psi, psi_prime = riccati_bessel_psi(int(l), z)
+        xi, xi_prime = riccati_bessel_xi(int(l), z)
+        j[i] = psi
+        h[i] = xi
+        zjp[i] = psi_prime
+        zhp[i] = xi_prime
+
+    return j, h, zjp, zhp
+
+
+def adipole(pos: np.ndarray, dip: np.ndarray, ltab: np.ndarray, mtab: np.ndarray) -> np.ndarray:
+    """
+    Spherical harmonics coefficients for dipole in the quasistatic limit.
+
+    The dipole potential for a given degree l and order m is of the form:
+        Phi = 4*pi / (2*l + 1) * a(l, m) * Y_l^m(theta, phi) / r^(l+1)
+
+    Parameters
+    ----------
+    pos : ndarray
+        Position of dipole (x, y, z), normalized by sphere radius.
+    dip : ndarray
+        Dipole vector (dx, dy, dz).
+    ltab : ndarray
+        Table of spherical harmonic degrees.
+    mtab : ndarray
+        Table of spherical harmonic orders.
+
+    Returns
+    -------
+    a : ndarray
+        Expansion coefficients.
+    """
+    pos = np.asarray(pos).flatten()
+    dip = np.asarray(dip).flatten()
+    ltab = np.asarray(ltab).flatten()
+    mtab = np.asarray(mtab).flatten()
+
+    # Convert position to spherical coordinates
+    r = np.linalg.norm(pos)
+    if r < 1e-14:
+        return np.zeros(len(ltab), dtype=complex)
+
+    theta = np.arccos(pos[2] / r)  # polar angle
+    phi = np.arctan2(pos[1], pos[0])  # azimuthal angle
+
+    # Unit vector to dipole position
+    e = pos / r
+
+    # Spherical harmonics and vector spherical harmonics
+    n_coeffs = len(ltab)
+    a = np.zeros(n_coeffs, dtype=complex)
+
+    for i in range(n_coeffs):
+        l = int(ltab[i])
+        m = int(mtab[i])
+
+        # Scalar spherical harmonic (complex conjugate)
+        y = np.conj(spharm(l, m, theta, phi))
+
+        # Vector spherical harmonic contribution
+        # This involves the derivative of Y_l^m
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta) if np.abs(np.sin(theta)) > 1e-14 else 1e-14
+
+        # dY/dtheta component
+        plm = legendre_p(l, abs(m), cos_theta)
+        dplm = legendre_p_derivative(l, abs(m), cos_theta)
+
+        # Normalization
+        norm = np.sqrt((2 * l + 1) / (4 * np.pi) *
+                      special.factorial(l - abs(m)) / special.factorial(l + abs(m)))
+
+        exp_imphi = np.exp(1j * m * phi)
+
+        # Vector spherical harmonic components
+        x_theta = norm * (-sin_theta) * dplm * exp_imphi
+        x_phi = norm * plm * (1j * m / sin_theta) * exp_imphi
+
+        # Unit vectors in spherical coordinates
+        e_theta = np.array([np.cos(theta) * np.cos(phi),
+                          np.cos(theta) * np.sin(phi),
+                          -np.sin(theta)])
+        e_phi = np.array([-np.sin(phi), np.cos(phi), 0])
+
+        # x vector (3D)
+        x_vec = x_theta * e_theta + x_phi * e_phi
+
+        # Expansion coefficient
+        e_dot_dip = np.dot(e, dip)
+        cross_e_dip = np.cross(e, dip)
+
+        a[i] = -((l + 1) * e_dot_dip * y +
+                 1j * np.sqrt(l * (l + 1)) * np.dot(np.conj(x_vec), cross_e_dip)) / r ** (l + 2)
+
+    return a
+
+
+def dipole_from_coeffs(ltab: np.ndarray, mtab: np.ndarray, a: np.ndarray,
+                       diameter: float, epsz: complex) -> np.ndarray:
+    """
+    Dipole moment of sphere within quasistatic Mie theory.
+
+    Parameters
+    ----------
+    ltab : ndarray
+        Table of spherical harmonic degrees.
+    mtab : ndarray
+        Table of spherical harmonic orders.
+    a : ndarray
+        Expansion coefficients.
+    diameter : float
+        Diameter of sphere.
+    epsz : complex
+        Ratio of dielectric functions (eps_in / eps_out).
+
+    Returns
+    -------
+    dip : ndarray
+        Dipole moment (3D vector).
+    """
+    ltab = np.asarray(ltab).flatten()
+    mtab = np.asarray(mtab).flatten()
+    a = np.asarray(a).flatten()
+
+    # Static Mie coefficients [Jackson eq. (4.5)]
+    c = (1 - epsz) * ltab / ((1 + epsz) * ltab + 1) * (diameter / 2) ** (2 * ltab + 1) * a
+
+    # Find indices for l=1, m=-1,0,1
+    idx_z = np.where((ltab == 1) & (mtab == 0))[0]
+    idx_p = np.where((ltab == 1) & (mtab == 1))[0]
+    idx_m = np.where((ltab == 1) & (mtab == -1))[0]
+
+    qz = np.sqrt(4 * np.pi / 3) * c[idx_z[0]] if len(idx_z) > 0 else 0
+    qp = -np.sqrt(4 * np.pi / 3) * c[idx_p[0]] if len(idx_p) > 0 else 0
+    qm = np.sqrt(4 * np.pi / 3) * c[idx_m[0]] if len(idx_m) > 0 else 0
+
+    # Compute dipole moment
+    dip = qz * np.array([0, 0, 1]) + (qp * np.array([1, 1j, 0]) + qm * np.array([1, -1j, 0])) / np.sqrt(2)
+
+    return np.real(dip)
+
+
+def field_from_coeffs(ltab: np.ndarray, mtab: np.ndarray, verts: np.ndarray,
+                      a: np.ndarray, diameter: float, epsz: complex) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Electric field and potential from Mie theory within quasistatic approximation.
+
+    Parameters
+    ----------
+    ltab : ndarray
+        Table of spherical harmonic degrees.
+    mtab : ndarray
+        Table of spherical harmonic orders.
+    verts : ndarray
+        Vertices where field is computed (should be on sphere surface).
+    a : ndarray
+        Expansion coefficients.
+    diameter : float
+        Diameter of sphere.
+    epsz : complex
+        Ratio of dielectric functions (eps_in / eps_out).
+
+    Returns
+    -------
+    e : ndarray
+        Electric field at vertices.
+    phi : ndarray
+        Scalar potential at vertices.
+    """
+    ltab = np.asarray(ltab).flatten()
+    mtab = np.asarray(mtab).flatten()
+    a = np.asarray(a).flatten()
+    verts = np.atleast_2d(verts)
+
+    # Static Mie coefficients
+    c = (1 - epsz) * ltab / ((1 + epsz) * ltab + 1) * (diameter / 2) ** (2 * ltab + 1) * a
+
+    nverts = verts.shape[0]
+
+    # Convert to spherical coordinates
+    r = np.linalg.norm(verts, axis=1)
+    r_mean = np.mean(r)
+    theta = np.arccos(np.clip(verts[:, 2] / r, -1, 1))
+    phi_coord = np.arctan2(verts[:, 1], verts[:, 0])
+
+    # Unit vectors
+    unit = verts / r[:, np.newaxis]
+
+    # Compute potential and field
+    phi_result = np.zeros(nverts, dtype=complex)
+    e_result = np.zeros((nverts, 3), dtype=complex)
+
+    for i in range(len(ltab)):
+        l = int(ltab[i])
+        m = int(mtab[i])
+
+        # Spherical harmonics at all vertices
+        y = spharm(l, m, theta, phi_coord)
+
+        # Potential contribution
+        fac_phi = 4 * np.pi / (2 * l + 1) * c[i] / r_mean ** (l + 1)
+        phi_result += fac_phi * y
+
+        # Electric field contribution (radial part)
+        fac_e = 4 * np.pi / (2 * l + 1) * c[i] * (l + 1) / r_mean ** (l + 2)
+        e_result += fac_e * y[:, np.newaxis] * unit
+
+    return e_result, phi_result
+
+
+def aeels(ltab: np.ndarray, mtab: np.ndarray, beta: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Spherical harmonics coefficients for EELS.
+
+    See F. J. Garcia de Abajo, Phys. Rev. B 59, 3095 (1999).
+
+    Parameters
+    ----------
+    ltab : ndarray
+        Table of spherical harmonic degrees.
+    mtab : ndarray
+        Table of spherical harmonic orders.
+    beta : float
+        Ratio of electron velocity to speed of light.
+
+    Returns
+    -------
+    ce : ndarray
+        Electric expansion coefficient [eq. (31)].
+    cm : ndarray
+        Magnetic expansion coefficient [eq. (30)].
+    """
+    ltab = np.asarray(ltab).flatten()
+    mtab = np.asarray(mtab).flatten()
+
+    # Legendre-Gauss-Lobatto nodes and weights
+    x, w = lglnodes(100)
+
+    # Table of factorials
+    max_lm = int(np.max(ltab + np.abs(mtab))) + 2
+    fac = np.array([special.factorial(i, exact=True) for i in range(max_lm + 1)])
+
+    # Gamma value
+    gamma = 1 / np.sqrt(1 - beta ** 2)
+
+    # Coupling coefficients
+    a = np.zeros(len(ltab), dtype=complex)
+
+    # Loop over unique spherical harmonic degrees
+    for l in np.unique(ltab):
+        l = int(l)
+        # Legendre polynomial
+        p = special.lpmv(np.arange(l + 1)[:, np.newaxis], l, x)  # shape: (l+1, len(x))
+
+        # Loop over spherical harmonics with m >= 0
+        for m in range(l + 1):
+            # Coefficient of Eq. (A9)
+            aa = 0.0 + 0.0j
+
+            # Alpha factor
+            alpha = np.sqrt((2 * l + 1) / (4 * np.pi) * fac[l - m] / fac[l + m])
+
+            for j in range(m, l + 1):
+                # Restrict sum to even j + m integers
+                if (j + m) % 2 == 0:
+                    # Integral (A7)
+                    I = ((-1) ** m * np.sum(w * p[m, :] *
+                         (1 - x ** 2) ** (j / 2) * x ** (l - j)))
+
+                    # C factor (A9)
+                    C = ((1j ** (l - j) * alpha * fac2(2 * l + 1) /
+                         (2 ** j * fac[l - j] *
+                          fac[(j - m) // 2] * fac[(j + m) // 2])) * I)
+
+                    # Add contribution
+                    aa += C / (beta ** (l + 1) * gamma ** j)
+
+            # Assign values to coefficients
+            idx_pos = np.where((ltab == l) & (mtab == m))[0]
+            idx_neg = np.where((ltab == l) & (mtab == -m))[0]
+
+            if len(idx_pos) > 0:
+                a[idx_pos] = aa
+            if len(idx_neg) > 0:
+                a[idx_neg] = ((-1) ** m) * aa
+
+    # Expansion coefficient of Eq. (15)
+    b = np.zeros(len(ltab), dtype=complex)
+
+    # Build index arrays
+    for i in range(len(ltab)):
+        l = int(ltab[i])
+        m = int(mtab[i])
+
+        if m != l:  # ip condition
+            # Find index with same l, m+1
+            idx_next = np.where((ltab == l) & (mtab == m + 1))[0]
+            if len(idx_next) > 0:
+                b[i] += a[idx_next[0]] * np.sqrt((l + m + 1) * (l - m))
+
+        if m != -l:  # im condition
+            # Find index with same l, m-1
+            idx_prev = np.where((ltab == l) & (mtab == m - 1))[0]
+            if len(idx_prev) > 0:
+                b[i] -= a[idx_prev[0]] * np.sqrt((l - m + 1) * (l + m))
+
+    # Magnetic and electric expansion coefficients of Eqs. (30, 31)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cm = 1 / (ltab * (ltab + 1)) * np.abs(2 * beta * mtab * a) ** 2
+        ce = 1 / (ltab * (ltab + 1)) * np.abs(b / gamma) ** 2
+
+    # Handle l=0 case
+    cm = np.where(ltab == 0, 0, cm)
+    ce = np.where(ltab == 0, 0, ce)
+
+    return ce, cm
+
+
+# Atomic units for EELS calculations
+BOHR = 0.0529177  # nm
+HARTREE = 27.2116  # eV
+FINE_STRUCTURE = 1 / 137.036  # fine structure constant

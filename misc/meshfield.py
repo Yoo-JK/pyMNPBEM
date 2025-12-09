@@ -3,12 +3,310 @@ Mesh field computation and interpolation utilities.
 
 These functions handle field calculations on particle surfaces
 and interpolation between mesh representations.
+
+This module provides:
+- MeshField: Field defined on a triangular mesh with interpolation
+- GridField: Field computation on a 3D grid using Green functions (MATLAB meshfield)
+- Utility functions for field interpolation and computation
 """
 
 import numpy as np
-from typing import Optional, Union, Tuple, List
+from typing import Optional, Union, Tuple, List, Any
 from scipy import interpolate
 from scipy.spatial import cKDTree
+
+
+class GridField:
+    """
+    Compute electromagnetic fields on a grid of positions.
+
+    This class is equivalent to MATLAB's meshfield class. It sets up a grid
+    of points and computes electromagnetic fields using Green functions.
+
+    Parameters
+    ----------
+    particle : ComParticle
+        Particle object.
+    x : ndarray
+        X-coordinates for field evaluation.
+    y : ndarray
+        Y-coordinates for field evaluation.
+    z : ndarray
+        Z-coordinates for field evaluation.
+    green_cls : class, optional
+        Green function class to use (GreenStat, GreenRet, etc.).
+    nmax : int, optional
+        Maximum number of points to process at once (memory optimization).
+    **kwargs
+        Additional arguments for Green function initialization.
+
+    Examples
+    --------
+    >>> from mnpbem import ComParticle, trisphere, GridField
+    >>> p = ComParticle(trisphere(10, 20))
+    >>> x = np.linspace(-20, 20, 50)
+    >>> y = np.linspace(-20, 20, 50)
+    >>> xx, yy = np.meshgrid(x, y)
+    >>> mf = GridField(p, xx, yy, 0)  # z=0 plane
+    >>> e, h = mf.field(sig, enei)
+    """
+
+    def __init__(
+        self,
+        particle: Any,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: Union[np.ndarray, float],
+        green_cls: Any = None,
+        nmax: Optional[int] = None,
+        **kwargs
+    ):
+        """Initialize grid field object."""
+        self.particle = particle
+        self.nmax = nmax
+        self.options = kwargs
+
+        # Expand coordinates to matching shapes
+        x, y, z = self._expand_coordinates(x, y, z)
+        self.x = x
+        self.y = y
+        self.z = z
+        self.original_shape = x.shape
+
+        # Create position array
+        self._pos = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+
+        # Store Green function class
+        self._green_cls = green_cls
+        self._green = None
+
+    def _expand_coordinates(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: Union[np.ndarray, float]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Expand coordinates to matching 3D arrays."""
+        x = np.atleast_1d(x)
+        y = np.atleast_1d(y)
+        z = np.atleast_1d(z)
+
+        # Check if shapes already match
+        shapes = [x.shape, y.shape, z.shape]
+        if len(set(str(s) for s in shapes)) == 1:
+            return x, y, z
+
+        # Expand scalar z
+        if z.size == 1:
+            z = np.full_like(x, z.item())
+            return x, y, z
+
+        # Handle 2D + 1D case: expand to 3D
+        if x.shape == y.shape and x.ndim == 2:
+            siz = x.shape
+            nz = z.size
+            x = np.broadcast_to(x[:, :, np.newaxis], (*siz, nz))
+            y = np.broadcast_to(y[:, :, np.newaxis], (*siz, nz))
+            z = np.broadcast_to(z.reshape(1, 1, nz), (*siz, nz))
+            return x.copy(), y.copy(), z.copy()
+
+        # Handle 1D arrays - create meshgrid
+        if x.ndim == 1 and y.ndim == 1 and z.ndim == 1:
+            x, y, z = np.meshgrid(x, y, z, indexing='ij')
+            return x, y, z
+
+        return x, y, z
+
+    @property
+    def pos(self) -> np.ndarray:
+        """Flattened position array (n_points, 3)."""
+        return self._pos
+
+    @property
+    def n_points(self) -> int:
+        """Number of evaluation points."""
+        return len(self._pos)
+
+    def _init_green(self, enei: float):
+        """Initialize Green function if needed."""
+        if self._green_cls is None:
+            # Try to import and use GreenStat as default
+            try:
+                from ..greenfun import GreenStat
+                self._green_cls = GreenStat
+            except ImportError:
+                raise ValueError("No Green function class specified")
+
+        # Create a point-like object for the field positions
+        from ..particles import ComPoint
+        pt = ComPoint(self.particle, self._pos, **self.options)
+
+        self._green = self._green_cls(pt, self.particle, **self.options)
+        self._green_enei = enei
+
+    def field(
+        self,
+        sig: Any,
+        enei: Optional[float] = None,
+        **kwargs
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """
+        Compute electromagnetic fields.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            Surface charges and currents from BEM solution.
+        enei : float, optional
+            Wavelength (for retarded calculations).
+        **kwargs
+            Additional parameters for Green function.
+
+        Returns
+        -------
+        e : ndarray
+            Electric field with shape matching input grid + (3,) for components.
+        h : ndarray or None
+            Magnetic field (None for quasistatic simulations).
+        """
+        # Check if sig already contains field
+        if hasattr(sig, 'e') and sig.e is not None:
+            return self._reshape_field(sig.e, sig.get('h', None))
+
+        # Use chunked computation if nmax is set
+        if self.nmax is not None and self.n_points > self.nmax:
+            return self._field_chunked(sig, enei, **kwargs)
+
+        return self._field_single(sig, enei, **kwargs)
+
+    def _field_single(
+        self,
+        sig: Any,
+        enei: Optional[float],
+        **kwargs
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Compute field using precomputed Green function."""
+        # Initialize Green function if needed
+        if self._green is None or (enei is not None and enei != self._green_enei):
+            self._init_green(enei)
+
+        # Compute field through Green function
+        f = self._green.field(sig, **kwargs)
+
+        e = f.get('e') if hasattr(f, 'get') else getattr(f, 'e', None)
+        h = f.get('h') if hasattr(f, 'get') else getattr(f, 'h', None)
+
+        return self._reshape_field(e, h)
+
+    def _field_chunked(
+        self,
+        sig: Any,
+        enei: Optional[float],
+        **kwargs
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Compute field in chunks to save memory."""
+        n = self.n_points
+        nmax = self.nmax
+
+        # Initialize output arrays
+        e_out = None
+        h_out = None
+
+        # Process in chunks
+        for start in range(0, n, nmax):
+            end = min(start + nmax, n)
+            indices = slice(start, end)
+
+            # Create sub-point object
+            from ..particles import ComPoint
+            pos_chunk = self._pos[indices]
+            pt = ComPoint(self.particle, pos_chunk, **self.options)
+
+            # Create Green function for chunk
+            g = self._green_cls(pt, self.particle, **self.options)
+
+            # Compute field
+            f = g.field(sig, **kwargs)
+            e_chunk = f.get('e') if hasattr(f, 'get') else getattr(f, 'e', None)
+            h_chunk = f.get('h') if hasattr(f, 'get') else getattr(f, 'h', None)
+
+            # Allocate output on first chunk
+            if e_out is None and e_chunk is not None:
+                shape = (n,) + e_chunk.shape[1:]
+                e_out = np.zeros(shape, dtype=e_chunk.dtype)
+            if h_out is None and h_chunk is not None:
+                shape = (n,) + h_chunk.shape[1:]
+                h_out = np.zeros(shape, dtype=h_chunk.dtype)
+
+            # Store chunk results
+            if e_chunk is not None:
+                e_out[indices] = e_chunk
+            if h_chunk is not None:
+                h_out[indices] = h_chunk
+
+        return self._reshape_field(e_out, h_out)
+
+    def _reshape_field(
+        self,
+        e: Optional[np.ndarray],
+        h: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Reshape field arrays to match original grid shape."""
+        if e is not None:
+            # Shape: original_shape + field_components
+            field_shape = e.shape[1:] if e.ndim > 1 else ()
+            new_shape = self.original_shape + field_shape
+            e = e.reshape(new_shape)
+
+        if h is not None:
+            field_shape = h.shape[1:] if h.ndim > 1 else ()
+            new_shape = self.original_shape + field_shape
+            h = h.reshape(new_shape)
+
+        return e, h
+
+    def potential(self, sig: Any, enei: Optional[float] = None) -> np.ndarray:
+        """
+        Compute electrostatic potential on grid.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            Surface charges.
+        enei : float, optional
+            Wavelength.
+
+        Returns
+        -------
+        ndarray
+            Potential values on grid.
+        """
+        # Get surface data
+        if hasattr(self.particle, 'pos'):
+            pos_surf = self.particle.pos
+            area = self.particle.area
+        else:
+            pos_surf = self.particle.pc.pos
+            area = self.particle.pc.area
+
+        charges = sig.get('sig') if hasattr(sig, 'get') else sig.sig
+
+        # Compute potential at each point
+        phi = np.zeros(self.n_points, dtype=complex)
+
+        for i, pt in enumerate(self._pos):
+            r = np.linalg.norm(pt - pos_surf, axis=1)
+            r[r < 1e-10] = 1e-10
+
+            if charges.ndim == 1:
+                phi[i] = np.sum(charges * area / (4 * np.pi * r))
+            else:
+                phi[i] = np.sum(charges[:, 0] * area / (4 * np.pi * r))
+
+        return phi.reshape(self.original_shape)
+
+    def __repr__(self) -> str:
+        return f"GridField(shape={self.original_shape}, n_points={self.n_points})"
 
 
 class MeshField:
@@ -402,3 +700,51 @@ def field_at_points(
 
     else:
         raise ValueError(f"Unknown field type: {field_type}")
+
+
+def gridfield(
+    particle,
+    x: np.ndarray,
+    y: np.ndarray,
+    z: Union[np.ndarray, float],
+    green_cls=None,
+    nmax: Optional[int] = None,
+    **kwargs
+) -> GridField:
+    """
+    Create a grid field object for electromagnetic field computation.
+
+    This is the Python equivalent of MATLAB's meshfield function.
+
+    Parameters
+    ----------
+    particle : ComParticle
+        Particle object.
+    x : ndarray
+        X-coordinates for field evaluation.
+    y : ndarray
+        Y-coordinates for field evaluation.
+    z : ndarray or float
+        Z-coordinates for field evaluation.
+    green_cls : class, optional
+        Green function class (GreenStat, GreenRet, etc.).
+    nmax : int, optional
+        Maximum points per chunk (memory optimization).
+    **kwargs
+        Additional Green function arguments.
+
+    Returns
+    -------
+    GridField
+        Grid field object.
+
+    Examples
+    --------
+    >>> # Create evaluation grid
+    >>> x = np.linspace(-20, 20, 50)
+    >>> y = np.linspace(-20, 20, 50)
+    >>> xx, yy = np.meshgrid(x, y)
+    >>> mf = gridfield(particle, xx, yy, 0)
+    >>> e, h = mf.field(sig)
+    """
+    return GridField(particle, x, y, z, green_cls=green_cls, nmax=nmax, **kwargs)

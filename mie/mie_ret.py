@@ -6,9 +6,13 @@ particle sizes.
 """
 
 import numpy as np
+from scipy import special
 from typing import Any, Union, Tuple, Optional
 
-from .spherical_harmonics import mie_coefficients, mie_efficiencies
+from .spherical_harmonics import (
+    mie_coefficients, mie_efficiencies, sphtable, aeels,
+    riccati_bessel, BOHR, HARTREE, FINE_STRUCTURE
+)
 
 
 class MieRet:
@@ -260,48 +264,185 @@ class MieRet:
 
         return Q_ext * geo_cs
 
-    def decay_rate(self, enei: np.ndarray, r: float, orientation: str = 'radial') -> np.ndarray:
+    def decay_rate(self, enei: float, z: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute decay rate enhancement for a dipole near the sphere.
+        Total and radiative decay rate for oscillating dipole near sphere.
+
+        Scattering rates are given in units of the free-space decay rate.
+        See Kim et al., Surf. Science 195, 1 (1988).
 
         Parameters
         ----------
-        enei : ndarray
-            Wavelengths in nm.
-        r : float
-            Distance from sphere center in nm.
-        orientation : str
-            Dipole orientation: 'radial' or 'tangential'.
+        enei : float
+            Wavelength of light in vacuum (single value).
+        z : ndarray
+            Dipole positions along z axis in nm.
 
         Returns
         -------
-        ndarray
-            Decay rate enhancement factor.
+        tot : ndarray
+            Total scattering rate for dipole orientations x and z, shape (len(z), 2).
+        rad : ndarray
+            Radiative scattering rate for dipole orientations x and z, shape (len(z), 2).
         """
+        enei = float(enei)
+        z = np.atleast_1d(z)
+
+        # Dielectric functions
+        epsb, k = self.epsout(np.array([enei]))
+        epsb = epsb[0]
+        k = k[0]
+        eps_in, k_in = self.epsin(np.array([enei]))
+        eps_in = eps_in[0]
+        k_in = k_in[0]
+
+        # Total and radiative scattering rate
+        tot = np.zeros((len(z), 2))
+        rad = np.zeros((len(z), 2))
+
+        # Use unique spherical harmonic degrees
+        if self.n_max is None:
+            x = np.real(k) * self.radius
+            l_max = int(x + 4 * x ** (1 / 3) + 2)
+            l_max = max(l_max, 10)
+        else:
+            l_max = self.n_max
+
+        l_values = np.arange(1, l_max + 1)
+
+        # Compute Riccati-Bessel functions for Mie coefficients
+        j1, h1, zjp1, zhp1 = riccati_bessel(0.5 * k * self.diameter, l_values)
+        j2, _, zjp2, _ = riccati_bessel(0.5 * k_in * self.diameter, l_values)
+
+        # Modified Mie coefficients [Eq. (11)]
+        A = (j1 * zjp2 - j2 * zjp1) / (j2 * zhp1 - h1 * zjp2)
+        B = (epsb * j1 * zjp2 - eps_in * j2 * zjp1) / (eps_in * j2 * zhp1 - epsb * h1 * zjp2)
+
+        # Loop over dipole positions
+        for iz, z_pos in enumerate(z):
+            # Background wavenumber * dipole position
+            y = k * z_pos
+
+            # Get spherical Bessel and Hankel functions at position of dipole
+            j, h, zjp, zhp = riccati_bessel(y, l_values)
+
+            # Normalized nonradiative decay rates [Eq. (17, 19)]
+            tot[iz, 0] = 1 + 1.5 * np.real(np.sum((l_values + 0.5) *
+                (B * (zhp / y) ** 2 + A * h ** 2)))
+            tot[iz, 1] = 1 + 1.5 * np.real(np.sum(
+                (2 * l_values + 1) * l_values * (l_values + 1) * B * (h / y) ** 2))
+
+            # Normalized radiative decay rates [Eq. (18, 20)]
+            rad[iz, 0] = 0.75 * np.sum((2 * l_values + 1) *
+                (np.abs(j + A * h) ** 2 + np.abs((zjp + B * zhp) / y) ** 2))
+            rad[iz, 1] = 1.5 * np.sum((2 * l_values + 1) * l_values * (l_values + 1) *
+                np.abs((j + B * h) / y) ** 2)
+
+        return np.real(tot), np.real(rad)
+
+    def loss(self, b: np.ndarray, enei: np.ndarray, beta: float = 0.7) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Energy loss probability for fast electron in vicinity of dielectric sphere.
+
+        See F. J. Garcia de Abajo, Phys. Rev. B 59, 3095 (1999).
+
+        Parameters
+        ----------
+        b : ndarray
+            Impact parameter (distance from sphere surface) in nm.
+        enei : ndarray
+            Wavelength of light in vacuum in nm.
+        beta : float
+            Electron velocity in units of speed of light (default 0.7).
+
+        Returns
+        -------
+        prob : ndarray
+            EELS probability, see Eq. (29), shape (len(b), len(enei)).
+        prad : ndarray
+            Photon emission probability, Eq. (37), shape (len(b), len(enei)).
+        """
+        b = np.atleast_1d(b)
         enei = np.atleast_1d(enei)
-        a_n, b_n = self.coefficients(enei)
 
-        _, k = self.epsout(enei)
-        kr = np.real(k) * r
+        # Make sure electron trajectory does not penetrate sphere
+        assert np.all(b > 0), "Impact parameter must be positive"
 
-        # This is a simplified version
-        # Full implementation requires spherical Bessel functions
-        gamma = np.ones(len(enei))
+        # Add sphere radius to impact parameter
+        b_total = 0.5 * self.diameter + b
 
-        n_max = a_n.shape[1]
-        for n in range(1, n_max + 1):
-            factor = (2 * n + 1) * n * (n + 1)
+        # Gamma factor
+        gamma = 1 / np.sqrt(1 - beta ** 2)
 
-            if orientation == 'radial':
-                gamma += factor * np.abs(a_n[:, n - 1]) ** 2 / kr ** (2 * n + 4)
-            else:
-                gamma += factor * (np.abs(a_n[:, n - 1]) ** 2 + np.abs(b_n[:, n - 1]) ** 2) / kr ** (2 * n + 4) / 4
+        # EELS and photon loss probability
+        prob = np.zeros((len(b), len(enei)))
+        prad = np.zeros((len(b), len(enei)))
 
-        return np.real(gamma)
+        # Determine l_max
+        if self.n_max is None:
+            x_max = np.max(2 * np.pi / enei) * self.radius
+            l_max = int(x_max + 4 * x_max ** (1 / 3) + 10)
+            l_max = max(l_max, 20)
+        else:
+            l_max = max(self.n_max, 20)
 
-    def loss(self, enei: np.ndarray) -> np.ndarray:
+        # Spherical harmonics tables
+        ltab, mtab = sphtable(l_max, 'full')
+
+        # Spherical harmonics coefficients for EELS
+        ce, cm = aeels(ltab, mtab, beta)
+
+        for ien, wavelength in enumerate(enei):
+            # Wavenumber of light in medium
+            epsb, k = self.epsout(np.array([wavelength]))
+            epsb = epsb[0]
+            k = np.real(k[0])
+
+            # Mie expressions only implemented for epsb = 1
+            # For other media, we use effective values
+            eps_in, _ = self.epsin(np.array([wavelength]))
+            epsz = eps_in[0] / epsb
+
+            # Get unique l values and compute Mie coefficients
+            l_unique = np.unique(ltab)
+
+            # Build te, tm arrays for all (l, m) combinations
+            te = np.zeros(len(ltab), dtype=complex)
+            tm = np.zeros(len(ltab), dtype=complex)
+
+            for l in l_unique:
+                l = int(l)
+                # Mie coefficients for this l
+                a_n, b_n = mie_coefficients(np.sqrt(epsz), k * self.radius, l)
+
+                # a, b correspond to 1i * [tE, tM] of Garcia [Eqs. (20, 21)]
+                te_l = 1j * a_n[l - 1] if l <= len(a_n) else 0
+                tm_l = 1j * b_n[l - 1] if l <= len(b_n) else 0
+
+                # Assign to all m values for this l
+                idx_l = np.where(ltab == l)[0]
+                te[idx_l] = te_l
+                tm[idx_l] = tm_l
+
+            for ib, b_val in enumerate(b_total):
+                # Modified Bessel function K_m
+                K = special.kv(np.abs(mtab), k * b_val / (beta * gamma))
+
+                # Energy loss probability, Eq. (29)
+                prob[ib, ien] = np.sum(K ** 2 * (cm * np.imag(tm) + ce * np.imag(te))) / k
+
+                # Photon loss probability, Eq. (37)
+                prad[ib, ien] = np.sum(K ** 2 * (cm * np.abs(tm) ** 2 + ce * np.abs(te) ** 2)) / k
+
+        # Convert to units of (1/eV)
+        prob = FINE_STRUCTURE ** 2 / (BOHR * HARTREE) * prob
+        prad = FINE_STRUCTURE ** 2 / (BOHR * HARTREE) * prad
+
+        return prob, prad
+
+    def loss_simple(self, enei: np.ndarray) -> np.ndarray:
         """
-        Compute energy loss probability (for EELS).
+        Simplified energy loss probability (proportional to extinction).
 
         Parameters
         ----------
@@ -311,9 +452,8 @@ class MieRet:
         Returns
         -------
         ndarray
-            Energy loss probability.
+            Energy loss probability (proportional to extinction).
         """
-        # Simplified model based on extinction
         return self.ext(enei)
 
     def __repr__(self) -> str:
