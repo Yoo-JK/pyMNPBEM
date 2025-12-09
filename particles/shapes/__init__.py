@@ -3,6 +3,7 @@ Particle shape generators for MNPBEM.
 
 This module provides functions to create common particle geometries:
 - trisphere: Triangulated sphere
+- trispherescale: Scaled sphere (non-uniform scaling)
 - tricube: Cube with rounded edges
 - trirod: Rod-shaped particle (cylinder with hemispherical caps)
 - tritorus: Torus (donut shape)
@@ -17,7 +18,7 @@ This module provides functions to create common particle geometries:
 - triprism: Polygonal prism
 """
 
-from .trisphere import trisphere, sphtriangulate
+from .trisphere import trisphere, sphtriangulate, trispherescale
 from .tricube import tricube
 from .trirod import trirod
 from .tritorus import tritorus
@@ -31,6 +32,7 @@ from .utils import fvgrid
 
 __all__ = [
     "trisphere",
+    "trispherescale",
     "sphtriangulate",
     "tricube",
     "trirod",

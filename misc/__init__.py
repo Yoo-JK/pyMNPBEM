@@ -7,7 +7,8 @@ from .options import BEMOptions, bemoptions, getbemoptions
 from .helpers import inner, outer, matcross, matmul, spdiag, vecnorm, vecnormalize
 from .plotting import (
     plot_particle, plot_spectrum, plot_field_slice,
-    arrow_plot, plot_eels_map, create_colormap
+    arrow_plot, plot_eels_map, create_colormap,
+    coneplot, coneplot2, patchcurvature, plot_curvature, streamplot3d
 )
 from .geometry import (
     distmin3, distmin_particle, point_in_particle,
@@ -46,6 +47,11 @@ __all__ = [
     "arrow_plot",
     "plot_eels_map",
     "create_colormap",
+    "coneplot",
+    "coneplot2",
+    "patchcurvature",
+    "plot_curvature",
+    "streamplot3d",
     # Geometry
     "distmin3",
     "distmin_particle",

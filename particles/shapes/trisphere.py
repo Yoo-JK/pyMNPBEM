@@ -214,3 +214,77 @@ def trisphere(
         p_final = Particle(verts, faces, interp=interp, **kwargs)
 
     return p_final
+
+
+def trispherescale(
+    n: int = 144,
+    diameter: float = 1.0,
+    scale: tuple = (1.0, 1.0, 1.0),
+    interp: str = 'curv',
+    **kwargs
+) -> Particle:
+    """
+    Create triangulated sphere with non-uniform scaling.
+
+    Creates a sphere and scales it along the x, y, z axes.
+    This is similar to triellipsoid but maintains better mesh
+    quality for small deformations.
+
+    Parameters
+    ----------
+    n : int
+        Approximate number of vertices.
+    diameter : float
+        Base diameter of sphere before scaling.
+    scale : tuple
+        (sx, sy, sz) scale factors along each axis.
+    interp : str
+        Interpolation type: 'flat' or 'curv'.
+    **kwargs : dict
+        Additional arguments passed to Particle.
+
+    Returns
+    -------
+    Particle
+        Scaled sphere particle.
+
+    Examples
+    --------
+    >>> # Create oblate spheroid (flattened along z)
+    >>> p = trispherescale(144, 10, scale=(1, 1, 0.5))
+    >>> # Create prolate spheroid (elongated along z)
+    >>> p = trispherescale(144, 10, scale=(1, 1, 2.0))
+    """
+    # Create base sphere
+    sphere = trisphere(n, diameter, interp='flat', **kwargs)
+
+    # Get vertices and apply scaling
+    verts = sphere.verts.copy()
+    scale = np.asarray(scale)
+    verts = verts * scale
+
+    # Get faces
+    faces = sphere.faces.copy()
+
+    # Create scaled particle
+    p = Particle(verts, faces, interp='flat', compute_normals=False)
+
+    # Add midpoints for curved interpolation
+    p = p.midpoints('flat')
+
+    # Rescale midpoint vertices to scaled sphere surface
+    if p.verts2 is not None:
+        # For each midpoint, project to the scaled ellipsoid surface
+        verts2_normalized = p.verts2 / scale
+        norms = np.linalg.norm(verts2_normalized, axis=1, keepdims=True)
+        norms = np.where(norms > 0, norms, 1)
+        # Project to ellipsoid
+        p.verts2 = verts2_normalized / norms * (diameter / 2) * scale
+
+    # Create final particle
+    if p.verts2 is not None:
+        p_final = Particle(p.verts2, p.faces2, interp=interp, **kwargs)
+    else:
+        p_final = Particle(verts, faces, interp=interp, **kwargs)
+
+    return p_final

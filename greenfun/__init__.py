@@ -37,6 +37,7 @@ from .coverlayer import CoverLayer, GreenStatCover, GreenRetCover, coverlayer
 from .aca import ACAMatrix, ACAGreen, aca, aca_full, aca_partial, CompressedGreenMatrix
 from .hmatrix import ClusterTree, HMatrix, HMatrixBlock, HMatrixGreen, hmatrix_solve
 from .green_table_layer import GreenTableLayer, CompGreenTableLayer
+from .slicer import Slicer, slicer, slice_matrix, apply_blockwise, blockwise_multiply, BlockMatrix, partition_indices
 
 __all__ = [
     # Basic
@@ -72,4 +73,12 @@ __all__ = [
     # Table-based Green functions
     "GreenTableLayer",
     "CompGreenTableLayer",
+    # Slicer utilities
+    "Slicer",
+    "slicer",
+    "slice_matrix",
+    "apply_blockwise",
+    "blockwise_multiply",
+    "BlockMatrix",
+    "partition_indices",
 ]
