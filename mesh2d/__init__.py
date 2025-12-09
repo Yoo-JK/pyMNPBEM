@@ -38,6 +38,11 @@ from .polygon import (
     Polygon, EdgeProfile, polygon_from_function,
     circle, ellipse, rectangle, rounded_rectangle, regular_polygon
 )
+from .mesh_utils import (
+    circumcircle, circumcircle_array, connectivity, findedge, fixmesh,
+    dist2poly, mytsearch, tinterp, checkgeometry, triarea as triarea2d,
+    mesh_collection
+)
 
 __all__ = [
     # Meshing functions
@@ -60,4 +65,16 @@ __all__ = [
     "rectangle",
     "rounded_rectangle",
     "regular_polygon",
+    # Mesh utilities
+    "circumcircle",
+    "circumcircle_array",
+    "connectivity",
+    "findedge",
+    "fixmesh",
+    "dist2poly",
+    "mytsearch",
+    "tinterp",
+    "checkgeometry",
+    "triarea2d",
+    "mesh_collection",
 ]

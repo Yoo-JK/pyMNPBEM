@@ -36,6 +36,7 @@ from .comp_green_stat_layer import CompGreenStatLayer, CompGreenStatMirror, Comp
 from .coverlayer import CoverLayer, GreenStatCover, GreenRetCover, coverlayer
 from .aca import ACAMatrix, ACAGreen, aca, aca_full, aca_partial, CompressedGreenMatrix
 from .hmatrix import ClusterTree, HMatrix, HMatrixBlock, HMatrixGreen, hmatrix_solve
+from .green_table_layer import GreenTableLayer, CompGreenTableLayer
 
 __all__ = [
     # Basic
@@ -68,4 +69,7 @@ __all__ = [
     "HMatrixBlock",
     "HMatrixGreen",
     "hmatrix_solve",
+    # Table-based Green functions
+    "GreenTableLayer",
+    "CompGreenTableLayer",
 ]
