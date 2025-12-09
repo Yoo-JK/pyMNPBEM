@@ -125,6 +125,168 @@ class DipoleStat:
 
         return CompStruct(p, enei, phip=phip)
 
+    def field(self, p: ComParticle, enei: float) -> CompStruct:
+        """
+        Compute electric field from dipole excitation.
+
+        Based on Jackson Eq. (4.13):
+        E = (3*r_hat*(r_hat.p) - p) / (4*pi*eps*r^3)
+
+        Parameters
+        ----------
+        p : ComParticle
+            Particle or points where field is computed.
+        enei : float
+            Wavelength in nm.
+
+        Returns
+        -------
+        CompStruct
+            Object containing electric field 'e' with shape
+            (n_pos, 3, n_dip, n_orient) for multiple dipole orientations.
+        """
+        pos = p.pos if hasattr(p, 'pos') else np.atleast_2d(p)
+        n_pos = len(pos)
+
+        # Get dielectric function of embedding medium
+        eps_medium = 1.0
+        if hasattr(p, 'eps') and self.medium <= len(p.eps):
+            eps_val = p.eps[self.medium - 1]
+            if callable(eps_val):
+                eps_medium = eps_val(enei)
+            else:
+                eps_medium = eps_val
+
+        # Handle dipole orientations - can be (n_dip, 3) or (n_dip, 3, n_orient)
+        dip = self.dip
+        if dip.ndim == 2:
+            dip = dip[:, :, np.newaxis]  # (n_dip, 3, 1)
+        n_orient = dip.shape[2]
+
+        # Allocate output: (n_pos, 3, n_dip, n_orient)
+        e = np.zeros((n_pos, 3, self.n_dip, n_orient))
+
+        for i in range(self.n_dip):
+            # Distance vector from dipole to field point
+            dr = pos - self.pt[i]  # (n_pos, 3)
+            r = np.linalg.norm(dr, axis=1)  # (n_pos,)
+
+            # Avoid division by zero
+            r = np.where(r < 1e-10, 1e-10, r)
+            r3 = r ** 3
+
+            # Normalized distance vector
+            r_hat = dr / r[:, np.newaxis]  # (n_pos, 3)
+
+            for j in range(n_orient):
+                d = dip[i, :, j]  # dipole moment (3,)
+
+                # Inner product r_hat . d
+                r_dot_d = np.sum(r_hat * d, axis=1)  # (n_pos,)
+
+                # Electric field: E = (3*r_hat*(r_hat.p) - p) / (4*pi*eps*r^3)
+                # Note: screening by dielectric function of embedding medium
+                e[:, 0, i, j] = (3 * r_hat[:, 0] * r_dot_d - d[0]) / (4 * np.pi * eps_medium * r3)
+                e[:, 1, i, j] = (3 * r_hat[:, 1] * r_dot_d - d[1]) / (4 * np.pi * eps_medium * r3)
+                e[:, 2, i, j] = (3 * r_hat[:, 2] * r_dot_d - d[2]) / (4 * np.pi * eps_medium * r3)
+
+        # Squeeze if only one orientation
+        if n_orient == 1:
+            e = e.squeeze(axis=-1)
+
+        return CompStruct(p, enei, e=e)
+
+    def farfield(self, spec, enei: float) -> CompStruct:
+        """
+        Compute far-field electromagnetic fields from dipoles.
+
+        Parameters
+        ----------
+        spec : object
+            Spectrum object with pinfty (sphere at infinity) and medium index.
+        enei : float
+            Wavelength in nm.
+
+        Returns
+        -------
+        CompStruct
+            Object containing far-field 'e' and 'h' fields.
+        """
+        # Get directions at infinity
+        if hasattr(spec, 'pinfty'):
+            pinfty = spec.pinfty
+            directions = pinfty.nvec if hasattr(pinfty, 'nvec') else pinfty
+        else:
+            directions = np.atleast_2d(spec)
+
+        n_dir = len(directions)
+
+        # Normalize directions
+        dir_norm = np.linalg.norm(directions, axis=1, keepdims=True)
+        directions = directions / np.where(dir_norm < 1e-10, 1, dir_norm)
+
+        # Get medium properties
+        medium = getattr(spec, 'medium', self.medium)
+        eps_medium = 1.0
+        if hasattr(spec, 'pinfty') and hasattr(spec.pinfty, 'eps'):
+            eps_tab = spec.pinfty.eps
+            if medium <= len(eps_tab):
+                eps_val = eps_tab[medium - 1]
+                if callable(eps_val):
+                    eps_medium = eps_val(enei)
+                else:
+                    eps_medium = eps_val
+
+        # Wave number and refractive index
+        k = 2 * np.pi * np.sqrt(eps_medium) / enei
+        nb = np.sqrt(eps_medium)
+
+        # Handle dipole orientations
+        dip = self.dip
+        if dip.ndim == 2:
+            dip = dip[:, :, np.newaxis]
+        n_orient = dip.shape[2]
+
+        # Screen dipoles by dielectric environment
+        eps_dip = np.ones(self.n_dip)
+        # Approximate screening: dip_screened = eps_medium / eps_local * dip
+
+        # Allocate far-fields
+        e = np.zeros((n_dir, 3, self.n_dip, n_orient), dtype=complex)
+        h = np.zeros((n_dir, 3, self.n_dip, n_orient), dtype=complex)
+
+        for i in range(self.n_dip):
+            # Green function for k*r -> infinity: exp(-i*k*r_hat.r0)
+            # where r0 is dipole position
+            phase = np.exp(-1j * k * np.dot(directions, self.pt[i]))  # (n_dir,)
+
+            for j in range(n_orient):
+                d = dip[i, :, j]  # (3,)
+
+                # Far-field amplitude
+                # E ~ k^2 * (n x p) x n * G = k^2 * [p - n*(n.p)] * G
+                # H ~ k^2 * (n x p) * G
+
+                for l, ndir in enumerate(directions):
+                    n_cross_p = np.cross(ndir, d)
+                    e_ff = np.cross(n_cross_p, ndir)
+
+                    e[l, :, i, j] = k**2 * e_ff * phase[l] / eps_medium
+                    h[l, :, i, j] = k**2 * n_cross_p * phase[l] / nb
+
+        # Squeeze if only one orientation
+        if n_orient == 1:
+            e = e.squeeze(axis=-1)
+            h = h.squeeze(axis=-1)
+
+        # Create result
+        if hasattr(spec, 'pinfty'):
+            result = CompStruct(spec.pinfty, enei, e=e, h=h)
+        else:
+            result = CompStruct(None, enei, e=e, h=h)
+
+        return result
+
     def decay_rate(self, sig: CompStruct) -> np.ndarray:
         """
         Compute radiative decay rate enhancement.

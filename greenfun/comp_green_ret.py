@@ -135,6 +135,78 @@ class CompGreenRet:
         """Clear cached matrices."""
         self.g.clear_cache()
 
+    def eval(self, enei: float = None, name: str = None) -> np.ndarray:
+        """
+        Evaluate Green function matrices.
+
+        This method provides a MATLAB-compatible interface for evaluating
+        Green function matrices by name.
+
+        Parameters
+        ----------
+        enei : float, optional
+            Wavelength in nm. If provided, sets the wavenumber k = 2*pi/enei.
+        name : str, optional
+            Name of matrix to return:
+            - 'G': Green function
+            - 'F': Surface derivative of Green function
+            - 'H1': F + 2*pi (for inside-to-outside)
+            - 'H2': F - 2*pi (for outside-to-inside)
+            - 'Gp': Gradient of Green function
+            - 'L': Dyadic Green function for vector potential
+            If None, returns G.
+
+        Returns
+        -------
+        ndarray
+            The requested Green function matrix.
+
+        Examples
+        --------
+        >>> g = CompGreenRet(p1, p2)
+        >>> G = g.eval(enei=500, name='G')
+        >>> F = g.eval(enei=500, name='F')
+        """
+        # Set wavenumber from wavelength
+        k = None
+        if enei is not None:
+            k = 2 * np.pi / enei
+
+        if name is None or name == 'G':
+            return self.G(k)
+        elif name == 'F':
+            return self.F(k)
+        elif name == 'H1':
+            return self.H1(k)
+        elif name == 'H2':
+            return self.H2(k)
+        elif name == 'Gp':
+            return self.Gp(k)
+        elif name == 'L':
+            return self.L(k)
+        else:
+            raise ValueError(f"Unknown matrix name: {name}. "
+                           f"Valid names: 'G', 'F', 'H1', 'H2', 'Gp', 'L'")
+
+    def diag(self, enei: float = None, name: str = 'G') -> np.ndarray:
+        """
+        Get diagonal elements of Green function matrix.
+
+        Parameters
+        ----------
+        enei : float, optional
+            Wavelength in nm.
+        name : str
+            Name of matrix ('G', 'F', 'H1', 'H2', 'L').
+
+        Returns
+        -------
+        ndarray
+            Diagonal elements.
+        """
+        mat = self.eval(enei=enei, name=name)
+        return np.diag(mat)
+
     def __repr__(self) -> str:
         return f"CompGreenRet(p1={self.p1}, p2={self.p2}, k={self.k})"
 

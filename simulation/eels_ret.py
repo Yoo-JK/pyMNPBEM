@@ -578,6 +578,174 @@ class EELSRet:
 
         return cl
 
+    def bulkloss(self, p: ComParticle, enei: float, phiout: float = 0.01) -> np.ndarray:
+        """
+        Compute EELS bulk loss probability for retarded case.
+
+        Based on Garcia de Abajo, Rev. Mod. Phys. 82, 209 (2010), Eq. (18).
+        This computes the energy loss probability from bulk material
+        traversed by the electron beam.
+
+        Parameters
+        ----------
+        p : ComParticle
+            Compound particle (used for dielectric functions and path length).
+        enei : float
+            Wavelength in nm.
+        phiout : float, optional
+            Collection angle in radians (default: 0.01 rad ~ 0.57 deg).
+
+        Returns
+        -------
+        ndarray
+            Bulk loss probability for each beam position (1/eV).
+        """
+        # Physical constants in atomic units
+        bohr = 0.05292  # Bohr radius in nm
+        hartree = 27.211  # 2 * Rydberg in eV
+        fine = 1 / 137.036  # Fine structure constant
+        eV2nm_local = 1239.84193  # eV to nm conversion
+
+        # Photon energy in eV
+        ene = eV2nm_local / enei
+
+        # Rest mass of electron in eV
+        mass = 0.51e6
+
+        # Get dielectric functions
+        if hasattr(p, 'eps'):
+            eps_list = []
+            for eps_func in p.eps:
+                if callable(eps_func):
+                    eps_list.append(eps_func(enei))
+                else:
+                    eps_list.append(eps_func)
+            eps = np.array(eps_list)
+        else:
+            eps = np.array([1.0])
+
+        # Wavenumber of electron beam
+        q = 2 * np.pi / (enei * self.velocity)
+
+        # Cutoff wavenumber
+        qc = q * np.sqrt((mass / ene) ** 2 * self.velocity ** 2 * phiout ** 2 + 1)
+
+        # Wavenumber of light in each medium
+        k = 2 * np.pi / enei * np.sqrt(eps)
+
+        # Compute path length through material
+        path_length = self._compute_path_length(p)
+
+        # Bulk loss calculation
+        pbulk = np.zeros(self.n_beams)
+
+        for i in range(self.n_beams):
+            path_i = path_length[i] if isinstance(path_length, np.ndarray) else path_length
+
+            for j, eps_j in enumerate(eps):
+                if np.abs(eps_j) < 1e-10:
+                    continue
+
+                k_j = k[j]
+
+                num = qc ** 2 - k_j ** 2
+                den = q ** 2 - k_j ** 2
+
+                if np.abs(den) < 1e-20:
+                    continue
+
+                log_arg = num / den
+                if np.real(log_arg) <= 0:
+                    log_val = np.log(np.abs(log_arg)) + 1j * np.pi
+                else:
+                    log_val = np.log(log_arg)
+
+                prefactor = fine ** 2 / (bohr * hartree * np.pi * self.velocity ** 2)
+                term = (self.velocity ** 2 - 1.0 / eps_j) * log_val
+                pbulk[i] += prefactor * np.imag(term) * path_i
+
+        return pbulk
+
+    def _compute_path_length(self, p: ComParticle) -> np.ndarray:
+        """Compute path length of electron beam through particle."""
+        if hasattr(p, 'verts') and hasattr(p, 'faces'):
+            verts = p.verts
+            faces = p.faces
+        elif hasattr(p, 'pc'):
+            verts = p.pc.verts if hasattr(p.pc, 'verts') else None
+            faces = p.pc.faces if hasattr(p.pc, 'faces') else None
+        else:
+            if hasattr(p, 'pos'):
+                z_extent = p.pos[:, 2].max() - p.pos[:, 2].min()
+                return np.ones(self.n_beams) * z_extent
+            return np.ones(self.n_beams) * 10.0
+
+        if verts is None:
+            if hasattr(p, 'pos'):
+                z_extent = p.pos[:, 2].max() - p.pos[:, 2].min()
+                return np.ones(self.n_beams) * z_extent
+            return np.ones(self.n_beams) * 10.0
+
+        path_length = np.zeros(self.n_beams)
+
+        for i, r_beam in enumerate(self.impact):
+            x0, y0 = r_beam[0], r_beam[1]
+            z_intersections = []
+
+            for face in faces:
+                tri_verts = verts[face]
+                if self._point_in_triangle_2d(x0, y0, tri_verts[:, :2]):
+                    z_int = self._interpolate_z(x0, y0, tri_verts)
+                    if z_int is not None:
+                        z_intersections.append(z_int)
+
+            if len(z_intersections) >= 2:
+                z_intersections.sort()
+                path_length[i] = z_intersections[-1] - z_intersections[0]
+
+        return path_length
+
+    def _point_in_triangle_2d(self, px: float, py: float, tri: np.ndarray) -> bool:
+        """Check if point is inside 2D triangle."""
+        def sign(p1, p2, p3):
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+
+        pt = np.array([px, py])
+        v1, v2, v3 = tri[0], tri[1], tri[2]
+
+        d1 = sign(pt, v1, v2)
+        d2 = sign(pt, v2, v3)
+        d3 = sign(pt, v3, v1)
+
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+
+        return not (has_neg and has_pos)
+
+    def _interpolate_z(self, px: float, py: float, tri: np.ndarray):
+        """Interpolate z-coordinate at point on triangle."""
+        v0 = tri[1] - tri[0]
+        v1 = tri[2] - tri[0]
+        v2 = np.array([px, py, 0]) - tri[0]
+
+        d00 = v0[0] * v0[0] + v0[1] * v0[1]
+        d01 = v0[0] * v1[0] + v0[1] * v1[1]
+        d11 = v1[0] * v1[0] + v1[1] * v1[1]
+        d20 = v2[0] * v0[0] + v2[1] * v0[1]
+        d21 = v2[0] * v1[0] + v2[1] * v1[1]
+
+        denom = d00 * d11 - d01 * d01
+        if np.abs(denom) < 1e-10:
+            return None
+
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        u = 1.0 - v - w
+
+        if u >= 0 and v >= 0 and w >= 0:
+            return u * tri[0, 2] + v * tri[1, 2] + w * tri[2, 2]
+        return None
+
     def __repr__(self) -> str:
         return f"EELSRet(n_beams={self.n_beams}, velocity={self.velocity})"
 

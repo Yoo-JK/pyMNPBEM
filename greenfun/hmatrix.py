@@ -255,6 +255,207 @@ class HMatrix:
         """Estimate memory usage in bytes."""
         return sum(block.storage for block in self.blocks) * 16  # complex128
 
+    def lu(self) -> Tuple['HMatrixLU', dict]:
+        """
+        Compute LU decomposition of H-matrix.
+
+        This provides an approximate LU factorization for use as a
+        preconditioner or direct solver. For H-matrices, the LU factors
+        are also H-matrices.
+
+        Returns
+        -------
+        lu : HMatrixLU
+            LU decomposition object with solve method.
+        info : dict
+            Decomposition information.
+
+        Notes
+        -----
+        For H-matrices, exact LU is expensive. This implementation
+        converts to dense and uses standard LU, which loses the H-matrix
+        structure but provides exact factorization. For large problems,
+        consider using iterative solvers instead.
+        """
+        from scipy.linalg import lu_factor
+
+        # Convert to dense and compute LU
+        A_dense = self.todense()
+        lu_piv = lu_factor(A_dense)
+
+        lu_decomp = HMatrixLU(lu_piv, self.shape)
+
+        info = {
+            'method': 'dense_lu',
+            'shape': self.shape,
+            'compression_ratio': self.compression_ratio
+        }
+
+        return lu_decomp, info
+
+    def inv(self) -> np.ndarray:
+        """
+        Compute inverse of H-matrix.
+
+        Returns the inverse as a dense matrix. For H-matrices,
+        maintaining structure in the inverse is complex, so this
+        returns a dense result.
+
+        Returns
+        -------
+        A_inv : ndarray
+            Inverse matrix (dense).
+
+        Warnings
+        --------
+        For large matrices, this is expensive (O(n^3)).
+        Consider using solve() with iterative methods instead.
+        """
+        A_dense = self.todense()
+        return np.linalg.inv(A_dense)
+
+    def solve(self, b: np.ndarray, method: str = 'gmres',
+              tol: float = 1e-8, maxiter: int = None) -> Tuple[np.ndarray, dict]:
+        """
+        Solve H-matrix linear system H @ x = b.
+
+        Parameters
+        ----------
+        b : ndarray
+            Right-hand side vector or matrix.
+        method : str
+            Solver method:
+            - 'gmres': GMRES iterative solver (default)
+            - 'lu': Direct LU solver (converts to dense)
+            - 'cg': Conjugate gradient (for SPD matrices)
+        tol : float
+            Solver tolerance for iterative methods.
+        maxiter : int, optional
+            Maximum iterations for iterative methods.
+
+        Returns
+        -------
+        x : ndarray
+            Solution vector.
+        info : dict
+            Solver information including convergence status.
+
+        Examples
+        --------
+        >>> H = HMatrix(...)
+        >>> x, info = H.solve(b, method='gmres')
+        >>> print(f"Converged: {info['converged']}")
+        """
+        from scipy.sparse.linalg import gmres, cg, LinearOperator
+
+        b = np.asarray(b)
+        n = self.shape[0]
+
+        if maxiter is None:
+            maxiter = min(n, 500)
+
+        if method == 'lu':
+            # Direct solver via LU
+            lu_decomp, _ = self.lu()
+            x = lu_decomp.solve(b)
+            info = {'method': 'lu', 'converged': True}
+            return x, info
+
+        # Iterative methods
+        op = LinearOperator(self.shape, matvec=self.matvec, dtype=complex)
+
+        if method == 'cg':
+            # Conjugate gradient (assumes SPD)
+            x, flag = cg(op, b, tol=tol, maxiter=maxiter)
+        else:
+            # Default: GMRES
+            x, flag = gmres(op, b, tol=tol, maxiter=maxiter)
+
+        info = {
+            'method': method,
+            'converged': flag == 0,
+            'flag': flag
+        }
+
+        return x, info
+
+    def truncate(self, eps: float = None) -> 'HMatrix':
+        """
+        Truncate low-rank blocks to reduce rank.
+
+        Recompresses low-rank blocks with a new tolerance.
+
+        Parameters
+        ----------
+        eps : float, optional
+            New truncation tolerance. If None, uses original eps.
+
+        Returns
+        -------
+        H_truncated : HMatrix
+            Truncated H-matrix (modified in place and returned).
+        """
+        if eps is None:
+            eps = self.eps
+
+        for block in self.blocks:
+            if block.block_type == 'lowrank' and block.rank > 0:
+                # SVD truncation
+                U, s, Vt = np.linalg.svd(block.U @ block.V.T, full_matrices=False)
+
+                # Find truncation rank
+                total = np.sum(s)
+                cumsum = np.cumsum(s)
+                keep = np.searchsorted(cumsum, (1 - eps) * total) + 1
+                keep = max(1, min(keep, len(s)))
+
+                # Truncate
+                block.U = U[:, :keep] * s[:keep]
+                block.V = Vt[:keep, :].T
+                block.rank = keep
+                block.storage = keep * (block.shape[0] + block.shape[1])
+
+        return self
+
+
+class HMatrixLU:
+    """
+    LU decomposition of H-matrix.
+
+    Stores LU factors for solving linear systems.
+    """
+
+    def __init__(self, lu_piv, shape):
+        """
+        Initialize from LU factorization.
+
+        Parameters
+        ----------
+        lu_piv : tuple
+            LU factorization from scipy.linalg.lu_factor.
+        shape : tuple
+            Matrix shape.
+        """
+        self.lu_piv = lu_piv
+        self.shape = shape
+
+    def solve(self, b: np.ndarray) -> np.ndarray:
+        """
+        Solve linear system using LU factors.
+
+        Parameters
+        ----------
+        b : ndarray
+            Right-hand side.
+
+        Returns
+        -------
+        x : ndarray
+            Solution.
+        """
+        from scipy.linalg import lu_solve
+        return lu_solve(self.lu_piv, b)
+
 
 class HMatrixBlock:
     """
