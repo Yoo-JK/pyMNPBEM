@@ -433,3 +433,171 @@ def refinematrixlayer(p1, p2, layer, abs_cutoff: float = 0, rel_cutoff: float = 
                 data.append(1)  # Additional 1 to make it 2 total
 
     return sparse.csr_matrix((data, (rows, cols)), shape=(n1, n2))
+
+
+# =============================================================================
+# Progress bar utilities
+# =============================================================================
+
+def progress_bar(iterable, desc: str = None, total: int = None, disable: bool = False):
+    """
+    Create a progress bar for iterating over items.
+
+    This function provides a unified interface for progress bars.
+    It uses tqdm if available, otherwise falls back to a simple
+    text-based progress indicator.
+
+    Parameters
+    ----------
+    iterable : iterable
+        The iterable to wrap with a progress bar.
+    desc : str, optional
+        Description text to display.
+    total : int, optional
+        Total number of items (if not inferable from iterable).
+    disable : bool, optional
+        If True, disable the progress bar.
+
+    Returns
+    -------
+    iterable
+        Wrapped iterable with progress bar.
+
+    Examples
+    --------
+    >>> for i in progress_bar(range(100), desc="Processing"):
+    ...     # do work
+    ...     pass
+    """
+    if disable:
+        return iterable
+
+    try:
+        from tqdm import tqdm
+        return tqdm(iterable, desc=desc, total=total)
+    except ImportError:
+        # Fallback: simple text-based progress
+        return _simple_progress(iterable, desc=desc, total=total)
+
+
+def _simple_progress(iterable, desc: str = None, total: int = None):
+    """
+    Simple fallback progress indicator when tqdm is not available.
+
+    Prints progress updates to stdout every 10% completion.
+    """
+    import sys
+
+    if total is None:
+        try:
+            total = len(iterable)
+        except TypeError:
+            total = None
+
+    desc = desc or "Progress"
+    count = 0
+    last_percent = -1
+
+    for item in iterable:
+        yield item
+        count += 1
+
+        if total is not None:
+            percent = int(100 * count / total)
+            if percent >= last_percent + 10:
+                print(f"\r{desc}: {percent}% ({count}/{total})", end="", file=sys.stderr)
+                sys.stderr.flush()
+                last_percent = percent
+
+    if total is not None:
+        print(f"\r{desc}: 100% ({total}/{total})", file=sys.stderr)
+
+
+# =============================================================================
+# Memory utilities
+# =============================================================================
+
+def memsize(obj, deep: bool = True) -> int:
+    """
+    Get memory size of an object in bytes.
+
+    Parameters
+    ----------
+    obj : object
+        Any Python object.
+    deep : bool, optional
+        If True, recursively measure size of nested objects.
+        Default is True.
+
+    Returns
+    -------
+    int
+        Memory size in bytes.
+
+    Examples
+    --------
+    >>> arr = np.zeros((1000, 1000))
+    >>> print(f"Array size: {memsize(arr) / 1e6:.2f} MB")
+    Array size: 8.00 MB
+    """
+    import sys
+
+    # For numpy arrays, use nbytes for accurate measurement
+    if isinstance(obj, np.ndarray):
+        return obj.nbytes
+
+    # For scipy sparse matrices
+    if sparse.issparse(obj):
+        return obj.data.nbytes + obj.indices.nbytes + obj.indptr.nbytes
+
+    # For lists and tuples with numpy arrays
+    if deep and isinstance(obj, (list, tuple)):
+        total = sys.getsizeof(obj)
+        for item in obj:
+            total += memsize(item, deep=True)
+        return total
+
+    # For dicts
+    if deep and isinstance(obj, dict):
+        total = sys.getsizeof(obj)
+        for key, value in obj.items():
+            total += memsize(key, deep=True)
+            total += memsize(value, deep=True)
+        return total
+
+    # Default: use sys.getsizeof
+    return sys.getsizeof(obj)
+
+
+def memsize_str(obj, deep: bool = True) -> str:
+    """
+    Get memory size of an object as a human-readable string.
+
+    Parameters
+    ----------
+    obj : object
+        Any Python object.
+    deep : bool, optional
+        If True, recursively measure size of nested objects.
+
+    Returns
+    -------
+    str
+        Human-readable size string (e.g., "8.00 MB").
+
+    Examples
+    --------
+    >>> arr = np.zeros((1000, 1000))
+    >>> print(memsize_str(arr))
+    8.00 MB
+    """
+    size = memsize(obj, deep=deep)
+
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024**2:
+        return f"{size / 1024:.2f} KB"
+    elif size < 1024**3:
+        return f"{size / 1024**2:.2f} MB"
+    else:
+        return f"{size / 1024**3:.2f} GB"

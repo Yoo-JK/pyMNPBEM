@@ -400,6 +400,80 @@ class Particle:
 
         return p
 
+    def curved(self, **kwargs) -> 'Particle':
+        """
+        Make curved particle boundary.
+
+        Curved boundaries use higher-order interpolation with midpoint
+        vertices for more accurate representation of curved surfaces.
+
+        Parameters
+        ----------
+        **kwargs
+            Additional arguments passed to midpoints().
+
+        Returns
+        -------
+        Particle
+            Particle with curved interpolation enabled.
+
+        Notes
+        -----
+        This method adds midpoint vertices to edges (if not already present)
+        and sets the interpolation mode to 'curv'.
+
+        Examples
+        --------
+        >>> sphere = trisphere(144, 10)
+        >>> sphere_curved = sphere.curved()
+        """
+        # Add midpoints if not already present
+        if self.verts2 is None or len(kwargs) > 0:
+            result = self.midpoints(**kwargs)
+        else:
+            result = Particle(self.verts.copy(), self.faces.copy(), self.interp)
+            result.verts2 = self.verts2.copy() if self.verts2 is not None else None
+            result.faces2 = self.faces2.copy() if self.faces2 is not None else None
+
+        # Set curved interpolation flag
+        result.interp = 'curv'
+
+        # Recompute normals for curved surface
+        result._compute_normals()
+
+        return result
+
+    def flat(self) -> 'Particle':
+        """
+        Make flat particle boundary.
+
+        Flat boundaries use linear interpolation between vertices,
+        which is faster but less accurate for curved surfaces.
+
+        Returns
+        -------
+        Particle
+            Particle with flat interpolation enabled.
+
+        Notes
+        -----
+        This method sets the interpolation mode to 'flat'. Midpoint
+        vertices (if present) are preserved but not used.
+
+        Examples
+        --------
+        >>> sphere_curved = trisphere(144, 10).curved()
+        >>> sphere_flat = sphere_curved.flat()
+        """
+        result = Particle(self.verts.copy(), self.faces.copy(), 'flat')
+        result.verts2 = self.verts2.copy() if self.verts2 is not None else None
+        result.faces2 = self.faces2.copy() if self.faces2 is not None else None
+
+        # Recompute normals for flat surface
+        result._compute_normals()
+
+        return result
+
     def curvature(self) -> np.ndarray:
         """
         Compute mean curvature at face centroids.
