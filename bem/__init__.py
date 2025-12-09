@@ -39,6 +39,7 @@ from .bem_stat_mirror import BEMStatMirror
 from .bem_ret_layer import BEMRetLayer, BEMRetMirror
 from .bem_iter import BEMIter, BEMStatIter, BEMRetIter
 from .bem_stat_eig import BEMStatEig, BEMStatEigMirror
+from .bem_ret_layer_iter import BEMRetLayerIter, BEMStatLayerIter
 
 __all__ = [
     # Basic
@@ -59,6 +60,9 @@ __all__ = [
     # Eigenvalue
     "BEMStatEig",
     "BEMStatEigMirror",
+    # Iterative layer
+    "BEMRetLayerIter",
+    "BEMStatLayerIter",
     # Analysis
     "PlasmonMode",
     "plasmonmode",

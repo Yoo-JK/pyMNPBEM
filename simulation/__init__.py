@@ -37,6 +37,7 @@ from .planewave_ret_layer import PlaneWaveRetLayer, PlaneWaveRetMirror, planewav
 from .dipole_ret import DipoleRet, dipole_ret
 from .dipole_ret_layer import DipoleRetLayer, DipoleRetMirror, dipole_ret_layer
 from .spectrum_ret import SpectrumRet, DecayRateSpectrum, spectrum_ret
+from .spectrum_layer import SpectrumStatLayer, SpectrumRetLayer, spectrum_stat_layer, spectrum_ret_layer
 from .electronbeam import ElectronBeam, ElectronBeamRet, electronbeam
 
 __all__ = [
@@ -74,4 +75,9 @@ __all__ = [
     "ElectronBeam",
     "ElectronBeamRet",
     "electronbeam",
+    # Layer spectrum
+    "SpectrumStatLayer",
+    "SpectrumRetLayer",
+    "spectrum_stat_layer",
+    "spectrum_ret_layer",
 ]

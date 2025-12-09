@@ -19,6 +19,7 @@ from .compoint import ComPoint
 from .compstruct import CompStruct
 from .layer_structure import LayerStructure
 from .comparticle_mirror import ComParticleMirror, CompStructMirror
+from .polygon import Polygon as Polygon2D, EdgeProfile, Polygon3
 
 __all__ = [
     "Particle",
@@ -30,4 +31,8 @@ __all__ = [
     "LayerStructure",
     "ComParticleMirror",
     "CompStructMirror",
+    # Polygon classes
+    "Polygon2D",
+    "EdgeProfile",
+    "Polygon3",
 ]
