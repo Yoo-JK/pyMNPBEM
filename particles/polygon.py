@@ -349,6 +349,285 @@ class Polygon:
 
         return ax
 
+    def round_corners(self, radius: float, n: int = 10) -> 'Polygon':
+        """
+        Round the corners of the polygon.
+
+        Parameters
+        ----------
+        radius : float
+            Radius of rounding.
+        n : int
+            Number of points per corner.
+
+        Returns
+        -------
+        Polygon
+            Polygon with rounded corners.
+        """
+        x_new = []
+        y_new = []
+        n_verts = self.n_vertices
+
+        for i in range(n_verts):
+            # Get three consecutive points
+            p_prev = np.array([self.x[i - 1], self.y[i - 1]])
+            p_curr = np.array([self.x[i], self.y[i]])
+            p_next = np.array([self.x[(i + 1) % n_verts], self.y[(i + 1) % n_verts]])
+
+            # Vectors to previous and next
+            v1 = p_prev - p_curr
+            v2 = p_next - p_curr
+
+            # Normalize
+            d1 = np.linalg.norm(v1)
+            d2 = np.linalg.norm(v2)
+
+            if d1 < 1e-10 or d2 < 1e-10:
+                x_new.append(p_curr[0])
+                y_new.append(p_curr[1])
+                continue
+
+            v1_norm = v1 / d1
+            v2_norm = v2 / d2
+
+            # Angle between vectors
+            cos_angle = np.clip(np.dot(v1_norm, v2_norm), -1, 1)
+            angle = np.arccos(cos_angle)
+
+            # Distance to tangent point
+            tan_dist = min(radius / np.tan(angle / 2), d1 / 2, d2 / 2)
+
+            if tan_dist < 1e-10:
+                x_new.append(p_curr[0])
+                y_new.append(p_curr[1])
+                continue
+
+            # Tangent points
+            t1 = p_curr + tan_dist * v1_norm
+            t2 = p_curr + tan_dist * v2_norm
+
+            # Arc center
+            actual_radius = tan_dist * np.tan(angle / 2)
+            bisector = v1_norm + v2_norm
+            bisector_norm = bisector / np.linalg.norm(bisector)
+            center = p_curr + (tan_dist / np.cos(angle / 2)) * bisector_norm
+
+            # Generate arc points
+            angle1 = np.arctan2(t1[1] - center[1], t1[0] - center[0])
+            angle2 = np.arctan2(t2[1] - center[1], t2[0] - center[0])
+
+            # Ensure correct arc direction
+            if angle2 - angle1 > np.pi:
+                angle2 -= 2 * np.pi
+            elif angle1 - angle2 > np.pi:
+                angle1 -= 2 * np.pi
+
+            angles = np.linspace(angle1, angle2, n)
+            arc_x = center[0] + actual_radius * np.cos(angles)
+            arc_y = center[1] + actual_radius * np.sin(angles)
+
+            x_new.extend(arc_x)
+            y_new.extend(arc_y)
+
+        return Polygon(np.array(x_new), np.array(y_new), self.closed)
+
+    def shiftbnd(self, amount: float) -> 'Polygon':
+        """
+        Shift polygon boundary inward (negative) or outward (positive).
+
+        Parameters
+        ----------
+        amount : float
+            Amount to shift (positive = outward).
+
+        Returns
+        -------
+        Polygon
+            Shifted polygon.
+        """
+        n = self.n_vertices
+        x_new = np.zeros(n)
+        y_new = np.zeros(n)
+
+        for i in range(n):
+            # Get current point and neighbors
+            p_prev = np.array([self.x[i - 1], self.y[i - 1]])
+            p_curr = np.array([self.x[i], self.y[i]])
+            p_next = np.array([self.x[(i + 1) % n], self.y[(i + 1) % n]])
+
+            # Edge vectors
+            e1 = p_curr - p_prev
+            e2 = p_next - p_curr
+
+            # Normal vectors (perpendicular, pointing outward)
+            n1 = np.array([-e1[1], e1[0]])
+            n2 = np.array([-e2[1], e2[0]])
+
+            # Normalize
+            n1 = n1 / (np.linalg.norm(n1) + 1e-10)
+            n2 = n2 / (np.linalg.norm(n2) + 1e-10)
+
+            # Average normal
+            n_avg = n1 + n2
+            n_avg = n_avg / (np.linalg.norm(n_avg) + 1e-10)
+
+            # Shift point
+            p_new = p_curr + amount * n_avg
+            x_new[i] = p_new[0]
+            y_new[i] = p_new[1]
+
+        return Polygon(x_new, y_new, self.closed)
+
+    def sort(self) -> 'Polygon':
+        """
+        Sort polygon vertices by angle from centroid.
+
+        Returns
+        -------
+        Polygon
+            Sorted polygon.
+        """
+        cx, cy = self.centroid()
+        angles = np.arctan2(self.y - cy, self.x - cx)
+        order = np.argsort(angles)
+        return Polygon(self.x[order], self.y[order], self.closed)
+
+    def symmetry(self, sym: str) -> Tuple['Polygon', 'Polygon']:
+        """
+        Transform polygon for given symmetry.
+
+        Only the irreducible part of the polygon is kept.
+
+        Parameters
+        ----------
+        sym : str
+            Symmetry keyword: 'x', 'y', or 'xy'.
+
+        Returns
+        -------
+        irreducible : Polygon
+            Irreducible part of polygon.
+        full : Polygon
+            Symmetrized full polygon.
+        """
+        if not sym:
+            return self, self
+
+        # Determine which region to keep
+        def inside(x, y, sym):
+            if sym == 'x':
+                return x >= 0
+            elif sym == 'y':
+                return y >= 0
+            elif sym == 'xy':
+                return (x >= 0) & (y >= 0)
+            return np.ones_like(x, dtype=bool)
+
+        mask = inside(self.x, self.y, sym)
+
+        # Simple extraction of inside points
+        x_irr = self.x[mask]
+        y_irr = self.y[mask]
+
+        if len(x_irr) == 0:
+            x_irr = np.array([0.0])
+            y_irr = np.array([0.0])
+
+        irreducible = Polygon(x_irr, y_irr, self.closed)
+
+        # Create full symmetrized polygon
+        x_full = list(x_irr)
+        y_full = list(y_irr)
+
+        if 'x' in sym and any(x_irr == 0):
+            # Reflect across x-axis
+            x_reflected = -x_irr[1:-1][::-1]
+            y_reflected = y_irr[1:-1][::-1]
+            x_full.extend(x_reflected)
+            y_full.extend(y_reflected)
+
+        if 'y' in sym and any(y_irr == 0):
+            # Reflect across y-axis
+            n_current = len(x_full)
+            x_reflected = x_full[1:n_current-1][::-1] if n_current > 2 else []
+            y_reflected = [-y for y in y_full[1:n_current-1][::-1]] if n_current > 2 else []
+            x_full.extend(x_reflected)
+            y_full.extend(y_reflected)
+
+        full = Polygon(np.array(x_full), np.array(y_full), self.closed)
+
+        return irreducible, full
+
+    @staticmethod
+    def union(*polygons: 'Polygon') -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Combine multiple polygons for use in mesh2d.
+
+        Parameters
+        ----------
+        *polygons : Polygon
+            Polygons to combine.
+
+        Returns
+        -------
+        pos : ndarray
+            Combined positions (n_total, 2).
+        cnet : ndarray
+            Edge connectivity for mesh2d (n_edges, 2).
+        """
+        pos_list = []
+        cnet_list = []
+        offset = 0
+
+        for poly in polygons:
+            n = poly.n_vertices
+            pos = poly.vertices
+            pos_list.append(pos)
+
+            # Create connectivity (0-indexed)
+            net = np.column_stack([
+                np.arange(n),
+                np.roll(np.arange(n), -1)
+            ])
+            cnet_list.append(net + offset)
+            offset += n
+
+        if not pos_list:
+            return np.zeros((0, 2)), np.zeros((0, 2), dtype=int)
+
+        return np.vstack(pos_list), np.vstack(cnet_list)
+
+    def polymesh2d(self, hdata: dict = None, options: dict = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Create 2D mesh from polygon using mesh2d.
+
+        Parameters
+        ----------
+        hdata : dict, optional
+            Mesh size control data.
+        options : dict, optional
+            Options for mesh2d.
+
+        Returns
+        -------
+        verts : ndarray
+            Vertices of 2D triangulation.
+        faces : ndarray
+            Faces of 2D triangulation.
+        """
+        try:
+            from ..mesh2d import mesh2d
+        except ImportError:
+            raise ImportError("mesh2d module required for polymesh2d")
+
+        pos, cnet = self.union(self)
+
+        # Apply mesh2d
+        verts, faces = mesh2d(pos, cnet, hdata=hdata, options=options)
+
+        return verts, faces
+
     def __repr__(self) -> str:
         return f"Polygon(n_vertices={self.n_vertices}, closed={self.closed})"
 

@@ -39,6 +39,9 @@ from .dipole_ret_layer import DipoleRetLayer, DipoleRetMirror, dipole_ret_layer
 from .spectrum_ret import SpectrumRet, DecayRateSpectrum, spectrum_ret
 from .spectrum_layer import SpectrumStatLayer, SpectrumRetLayer, spectrum_stat_layer, spectrum_ret_layer
 from .electronbeam import ElectronBeam, ElectronBeamRet, electronbeam
+from .potwire import (
+    potwire, potwire_single, electron_beam_potential, WirePotential
+)
 
 __all__ = [
     # Quasistatic
@@ -80,4 +83,9 @@ __all__ = [
     "SpectrumRetLayer",
     "spectrum_stat_layer",
     "spectrum_ret_layer",
+    # Wire potential
+    "potwire",
+    "potwire_single",
+    "electron_beam_potential",
+    "WirePotential",
 ]

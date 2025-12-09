@@ -18,10 +18,17 @@ from .geometry import (
     nearest_face, project_to_surface, surface_distance,
     gap_distance, compute_solid_angle, mesh_quality
 )
-from .meshfield import MeshField, meshfield, interpolate_field, field_at_points
+from .meshfield import (
+    MeshField, meshfield, interpolate_field, field_at_points,
+    GridField, gridfield
+)
 from .arrays import (
     ValArray, VecArray, valarray, vecarray,
     igrid, meshgrid3d, linspace_grid, sphere_grid, cylinder_grid
+)
+from .integration import (
+    lglnodes, lgwt, triangle_quadrature, quad_quadrature,
+    QuadFace, quadface
 )
 
 __all__ = [
@@ -73,6 +80,8 @@ __all__ = [
     # Mesh field
     "MeshField",
     "meshfield",
+    "GridField",
+    "gridfield",
     "interpolate_field",
     "field_at_points",
     # Arrays
@@ -86,4 +95,11 @@ __all__ = [
     "linspace_grid",
     "sphere_grid",
     "cylinder_grid",
+    # Integration
+    "lglnodes",
+    "lgwt",
+    "triangle_quadrature",
+    "quad_quadrature",
+    "QuadFace",
+    "quadface",
 ]
