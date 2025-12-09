@@ -34,12 +34,31 @@ class Polygon:
         self,
         x: np.ndarray,
         y: np.ndarray,
-        closed: bool = False
+        closed: bool = False,
+        dir: int = 1,
+        sym: Optional[str] = None
     ):
-        """Initialize polygon."""
+        """
+        Initialize polygon.
+
+        Parameters
+        ----------
+        x : ndarray
+            X-coordinates of vertices.
+        y : ndarray
+            Y-coordinates of vertices.
+        closed : bool
+            Whether polygon is closed.
+        dir : int
+            Direction of normals: 1 for outward, -1 for inward.
+        sym : str, optional
+            Symmetry type: 'x', 'y', or 'xy'.
+        """
         self.x = np.asarray(x, dtype=float)
         self.y = np.asarray(y, dtype=float)
         self.closed = closed
+        self.dir = dir
+        self.sym = sym
 
         if len(self.x) != len(self.y):
             raise ValueError("x and y must have same length")
@@ -156,7 +175,7 @@ class Polygon:
         Polygon
             New shifted polygon.
         """
-        return Polygon(self.x + dx, self.y + dy, self.closed)
+        return Polygon(self.x + dx, self.y + dy, self.closed, self.dir, self.sym)
 
     def scale(self, sx: float, sy: Optional[float] = None) -> 'Polygon':
         """
@@ -176,7 +195,7 @@ class Polygon:
         """
         if sy is None:
             sy = sx
-        return Polygon(self.x * sx, self.y * sy, self.closed)
+        return Polygon(self.x * sx, self.y * sy, self.closed, self.dir, self.sym)
 
     def rotate(self, angle: float, center: Optional[Tuple[float, float]] = None) -> 'Polygon':
         """
@@ -207,7 +226,7 @@ class Polygon:
         x_new = x * cos_a - y * sin_a + cx
         y_new = x * sin_a + y * cos_a + cy
 
-        return Polygon(x_new, y_new, self.closed)
+        return Polygon(x_new, y_new, self.closed, self.dir, self.sym)
 
     def flip(self, axis: str = 'x') -> 'Polygon':
         """
@@ -224,13 +243,117 @@ class Polygon:
             New flipped polygon.
         """
         if axis == 'x':
-            return Polygon(-self.x, self.y, self.closed)
+            return Polygon(-self.x, self.y, self.closed, self.dir, self.sym)
         else:
-            return Polygon(self.x, -self.y, self.closed)
+            return Polygon(self.x, -self.y, self.closed, self.dir, self.sym)
 
     def reverse(self) -> 'Polygon':
         """Reverse vertex order."""
-        return Polygon(self.x[::-1], self.y[::-1], self.closed)
+        return Polygon(self.x[::-1], self.y[::-1], self.closed, self.dir, self.sym)
+
+    def norm(self) -> np.ndarray:
+        """
+        Compute normal vectors at polygon vertices.
+
+        Returns outward-pointing normal vectors at each vertex of the polygon.
+        The direction depends on the polygon's dir attribute.
+
+        Returns
+        -------
+        nvec : ndarray
+            Normal vectors at each vertex, shape (n_vertices, 2).
+
+        Notes
+        -----
+        For symmetry points (defined by sym attribute), normal vectors are
+        constrained to be perpendicular to the symmetry axis.
+
+        Examples
+        --------
+        >>> poly = Polygon([0, 1, 1, 0], [0, 0, 1, 1])
+        >>> normals = poly.norm()
+        """
+        pos = self.vertices
+        n = len(pos)
+
+        # Compute edge vectors
+        vec = np.roll(pos, -1, axis=0) - pos
+
+        # Perpendicular vectors (rotate 90 degrees: [-y, x])
+        nvec = np.column_stack([-vec[:, 1], vec[:, 0]])
+
+        # Normalize
+        norms = np.sqrt(np.sum(nvec**2, axis=1, keepdims=True))
+        norms = np.where(norms > 1e-12, norms, 1.0)
+        nvec = nvec / norms
+
+        # Interpolate to vertex positions (average of adjacent edge normals)
+        nvec = 0.5 * (nvec + np.roll(nvec, 1, axis=0))
+        norms = np.sqrt(np.sum(nvec**2, axis=1, keepdims=True))
+        norms = np.where(norms > 1e-12, norms, 1.0)
+        nvec = nvec / norms
+
+        # Check direction using inpolygon test
+        posp = pos + 1e-6 * nvec
+        inside = self.inside(posp[:, 0], posp[:, 1])
+
+        # Adjust direction based on dir attribute
+        if self.dir == 1:
+            # Outward normals: flip if inside
+            nvec[inside] = -nvec[inside]
+        else:
+            # Inward normals: flip if outside
+            nvec[~inside] = -nvec[~inside]
+
+        # Handle symmetry points
+        if self.sym is not None:
+            if self.sym in ('x', 'xy'):
+                # Normal perpendicular to x-axis at x=0
+                mask = np.abs(pos[:, 0]) < 1e-10
+                nvec[mask, 0] = 0
+            if self.sym in ('y', 'xy'):
+                # Normal perpendicular to y-axis at y=0
+                mask = np.abs(pos[:, 1]) < 1e-10
+                nvec[mask, 1] = 0
+
+            # Re-normalize after symmetry adjustments
+            norms = np.sqrt(np.sum(nvec**2, axis=1, keepdims=True))
+            norms = np.where(norms > 1e-12, norms, 1.0)
+            nvec = nvec / norms
+
+        return nvec
+
+    def inside(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """
+        Test if points are inside polygon.
+
+        Parameters
+        ----------
+        x : ndarray
+            X-coordinates of test points.
+        y : ndarray
+            Y-coordinates of test points.
+
+        Returns
+        -------
+        ndarray
+            Boolean array, True for points inside polygon.
+        """
+        x = np.atleast_1d(x)
+        y = np.atleast_1d(y)
+        n = len(self.x)
+        inside = np.zeros(len(x), dtype=bool)
+
+        px, py = self.x, self.y
+        j = n - 1
+
+        for i in range(n):
+            if ((py[i] > y) != (py[j] > y)) and \
+               (x < (px[j] - px[i]) * (y - py[i]) / (py[j] - py[i]) + px[i]):
+                inside = ~inside
+            j = i
+
+        return inside
 
     def dist(self, point: Tuple[float, float]) -> float:
         """

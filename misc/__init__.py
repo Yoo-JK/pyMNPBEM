@@ -2,11 +2,16 @@
 Miscellaneous utilities for MNPBEM.
 """
 
-from .units import eV2nm, nm2eV, HARTREE, TUNIT, SPEED_OF_LIGHT
+from .units import (
+    eV2nm, nm2eV, HARTREE, TUNIT, SPEED_OF_LIGHT,
+    BOHR, bohr, FINE, fine, hartree, c,
+    wavelength_to_energy, energy_to_wavelength
+)
 from .options import BEMOptions, bemoptions, getbemoptions
 from .helpers import (
     inner, outer, matcross, matmul, spdiag, vecnorm, vecnormalize,
-    bdist2, pdist2, bradius, refinematrix, refinematrixlayer
+    bdist2, pdist2, bradius, refinematrix, refinematrixlayer,
+    progress_bar, memsize, memsize_str
 )
 from .plotting import (
     plot_particle, plot_spectrum, plot_field_slice,
@@ -32,12 +37,20 @@ from .integration import (
 )
 
 __all__ = [
-    # Units
+    # Units and physical constants
     "eV2nm",
     "nm2eV",
     "HARTREE",
+    "hartree",
     "TUNIT",
     "SPEED_OF_LIGHT",
+    "c",
+    "BOHR",
+    "bohr",
+    "FINE",
+    "fine",
+    "wavelength_to_energy",
+    "energy_to_wavelength",
     # Options
     "BEMOptions",
     "bemoptions",
@@ -55,6 +68,9 @@ __all__ = [
     "bradius",
     "refinematrix",
     "refinematrixlayer",
+    "progress_bar",
+    "memsize",
+    "memsize_str",
     # Plotting
     "plot_particle",
     "plot_spectrum",
