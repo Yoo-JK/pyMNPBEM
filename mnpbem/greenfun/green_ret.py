@@ -417,6 +417,10 @@ class GreenRet:
         """
         Gp = self.Gp(k)
 
+        # Handle sig with shape (n2, 1) - squeeze to 1D for single excitation
+        if sig.ndim == 2 and sig.shape[1] == 1:
+            sig = sig.squeeze(axis=1)
+
         if sig.ndim == 1:
             return -np.einsum('ijk,j->ik', Gp, sig)
         else:
