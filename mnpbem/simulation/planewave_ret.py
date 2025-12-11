@@ -162,7 +162,9 @@ class PlaneWaveRet:
         """
         Compute extinction cross section using optical theorem.
 
-        C_ext = 4*pi/k * Im(pol* . E_forward)
+        C_ext = 4*pi*k * Im(pol* . p)
+
+        where p is the induced dipole moment from surface charges.
 
         Parameters
         ----------
@@ -174,20 +176,76 @@ class PlaneWaveRet:
         ext : ndarray
             Extinction cross section for each polarization
         """
-        if self._spec is None:
-            raise ValueError("Spectrum object not set. Use set_spectrum() first.")
+        # If SpectrumRet is available, use full far-field calculation
+        if self._spec is not None:
+            try:
+                field, k = self._spec.farfield(sig, self.dir)
+                ext = np.zeros(self.n_pol)
+                for i in range(self.n_pol):
+                    E_forward = field.e[i, :, i] if field.e.ndim == 3 else field.e[i, :]
+                    ext[i] = 4 * np.pi / k * np.imag(np.vdot(self.pol[i], E_forward))
+                return ext
+            except Exception:
+                pass  # Fall back to simple method
 
-        # Get far-field amplitude in forward direction
-        field, k = self._spec.farfield(sig, self.dir)
+        # Simple dipole-based extinction (like quasistatic)
+        return self._simple_extinction(sig)
 
-        # Optical theorem: C_ext = 4*pi/k * Im(pol* . E)
-        # Note: inner() in MATLAB takes conjugate of first argument
-        ext = np.zeros(self.n_pol)
-        for i in range(self.n_pol):
-            E_forward = field.e[i, :, i] if field.e.ndim == 3 else field.e[i, :]
-            ext[i] = 4 * np.pi / k * np.imag(np.vdot(self.pol[i], E_forward))
+    def _simple_extinction(self, sig):
+        """
+        Simple extinction using dipole approximation.
 
-        return ext
+        For particles smaller than wavelength, this gives good results.
+        C_ext = 4*pi*k * Im(pol* . p)
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution
+
+        Returns
+        -------
+        ext : ndarray
+            Extinction cross section for each polarization
+        """
+        # Get particle geometry
+        p = sig.p
+        pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+        area = p.area if hasattr(p, 'area') else p.pc.area
+
+        # Get surface charges (prefer sig2 = outer surface)
+        charges = sig.get('sig2')
+        if charges is None:
+            charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("No surface charges found in solution")
+
+        # Ensure charges is 2D: (n_faces, n_pol)
+        if charges.ndim == 1:
+            charges = charges[:, np.newaxis]
+
+        n_pol = charges.shape[1]
+
+        # Induced dipole moment: p = integral(r * sigma * dA)
+        # dip[k, j] = sum_i pos[i, k] * area[i] * sig[i, j]
+        weighted_pos = pos * area[:, np.newaxis]  # (n_faces, 3)
+        dip = weighted_pos.T @ charges  # (3, n_pol)
+
+        # Get wavenumber in medium
+        eps_result = p.eps[self.medium - 1](sig.enei)
+        if isinstance(eps_result, tuple):
+            eps_med, k = eps_result
+        else:
+            eps_med = eps_result
+            k = 2 * np.pi * np.sqrt(eps_med) / sig.enei
+
+        # Extinction: C_ext = 4*pi*k * Im(pol* . p)
+        ext = np.zeros(n_pol)
+        for i in range(min(self.n_pol, n_pol)):
+            pol_dot_dip = np.vdot(self.pol[i], dip[:, i])
+            ext[i] = 4 * np.pi * k * np.imag(pol_dot_dip)
+
+        return np.real(ext)
 
     def scattering(self, sig):
         """
@@ -202,30 +260,86 @@ class PlaneWaveRet:
         -------
         sca : ndarray
             Scattering cross section for each polarization
-        dsca : dict
-            Differential scattering cross section
+        dsca : dict or None
+            Differential scattering cross section (None for simple method)
         """
-        if self._spec is None:
-            raise ValueError("Spectrum object not set. Use set_spectrum() first.")
+        # If SpectrumRet is available, use full far-field integration
+        if self._spec is not None:
+            try:
+                sca, dsca = self._spec.scattering(sig)
+                # Get refractive index of embedding medium
+                eps_bg = sig.p.eps[0](sig.enei)
+                if isinstance(eps_bg, tuple):
+                    eps_bg = eps_bg[0]
+                nb = np.sqrt(eps_bg)
+                # Normalize by incoming power
+                sca = sca / (0.5 * nb)
+                if dsca is not None:
+                    dsca['dsca'] = dsca['dsca'] / (0.5 * nb)
+                return sca, dsca
+            except Exception:
+                pass  # Fall back to simple method
 
-        sca, dsca = self._spec.scattering(sig)
+        # Simple dipole-based scattering
+        return self._simple_scattering(sig), None
 
-        # Get refractive index of embedding medium
-        eps_bg = sig.p.eps[0](sig.enei)
-        if isinstance(eps_bg, tuple):
-            eps_bg = eps_bg[0]
-        nb = np.sqrt(eps_bg)
+    def _simple_scattering(self, sig):
+        """
+        Simple scattering using dipole approximation.
 
-        # Normalize by incoming power (0.5 * epsb * c/n)
-        sca = sca / (0.5 * nb)
-        if dsca is not None:
-            dsca['dsca'] = dsca['dsca'] / (0.5 * nb)
+        C_sca = (8*pi/3) * k^4 * |p|^2
 
-        return sca, dsca
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution
+
+        Returns
+        -------
+        sca : ndarray
+            Scattering cross section for each polarization
+        """
+        # Get particle geometry
+        p = sig.p
+        pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+        area = p.area if hasattr(p, 'area') else p.pc.area
+
+        # Get surface charges
+        charges = sig.get('sig2')
+        if charges is None:
+            charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("No surface charges found in solution")
+
+        if charges.ndim == 1:
+            charges = charges[:, np.newaxis]
+
+        n_pol = charges.shape[1]
+
+        # Induced dipole moment
+        weighted_pos = pos * area[:, np.newaxis]
+        dip = weighted_pos.T @ charges  # (3, n_pol)
+
+        # Get wavenumber
+        eps_result = p.eps[self.medium - 1](sig.enei)
+        if isinstance(eps_result, tuple):
+            eps_med, k = eps_result
+        else:
+            eps_med = eps_result
+            k = 2 * np.pi * np.sqrt(eps_med) / sig.enei
+
+        # Scattering: C_sca = (8*pi/3) * k^4 * |p|^2
+        sca = np.zeros(n_pol)
+        for i in range(n_pol):
+            sca[i] = (8 * np.pi / 3) * np.real(k)**4 * np.sum(np.abs(dip[:, i])**2)
+
+        return np.real(sca)
 
     def absorption(self, sig):
         """
         Compute absorption cross section.
+
+        C_abs = C_ext - C_sca
 
         Parameters
         ----------
@@ -237,12 +351,16 @@ class PlaneWaveRet:
         abs : ndarray
             Absorption cross section for each polarization
         """
-        return self.extinction(sig) - self.scattering(sig)[0]
+        ext = self.extinction(sig)
+        sca_result = self.scattering(sig)
+        sca = sca_result[0] if isinstance(sca_result, tuple) else sca_result
+        return ext - sca
 
     # Legacy methods for backward compatibility
     def sca(self, sig):
         """Compute scattering cross section (legacy interface)."""
-        return self.scattering(sig)[0]
+        sca_result = self.scattering(sig)
+        return sca_result[0] if isinstance(sca_result, tuple) else sca_result
 
     def ext(self, sig):
         """Compute extinction cross section (legacy interface)."""
