@@ -282,7 +282,9 @@ class DipoleRetLayer(DipoleRet):
         # This is a simplified model; full treatment requires
         # Sommerfeld integrals
         z_interface = self.layer.z[0] if len(self.layer.z) > 0 else 0
-        r_s, r_p = self._fresnel_coefficients(sig.wavelength, 0)
+        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
+        r_s, r_p = self._fresnel_coefficients(wavelength, 0)
 
         gamma = np.zeros(self.n_dip)
 
@@ -293,7 +295,7 @@ class DipoleRetLayer(DipoleRet):
                 gamma[i] = gamma_particle[i]
                 continue
 
-            k = 2 * np.pi / sig.wavelength
+            k = 2 * np.pi / wavelength
 
             # Dipole orientation
             dip_perp = np.abs(self.dip[i, 2])  # Perpendicular component

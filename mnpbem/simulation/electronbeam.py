@@ -252,7 +252,13 @@ class ElectronBeam:
             Loss probability (dimensionless)
         """
         # Get induced potential along trajectory
-        particle = sig.particle
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
 
         # Sample points along trajectory
         z_min = -100  # nm
@@ -288,7 +294,13 @@ class ElectronBeam:
 
     def _induced_potential(self, sig, pts, wavelength):
         """Compute induced potential at points from surface charges."""
-        particle = sig.particle
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
 
         if hasattr(particle, 'pc'):
             pos_surf = particle.pc.pos
