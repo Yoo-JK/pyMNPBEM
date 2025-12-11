@@ -117,20 +117,74 @@ class BEMStatLayer(BEMBase):
         return self.solve(exc)
 
     def field(self, sig: CompStruct, pts=None) -> np.ndarray:
-        """Compute electric field from surface charges."""
+        """
+        Compute electric field from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Electric field, shape (n_pts, 3).
+        """
+        from ..greenfun import CompGreenStatLayer
+        from ..particles import ComPoint
+
         charges = sig.get('sig')
         if charges is None:
             raise ValueError("Solution must have 'sig' field")
 
-        return self.g.field(charges, sig.enei)
+        if pts is None:
+            # Field at particle surface
+            return self.g.field(charges, sig.enei)
+        else:
+            # Field at external points
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = CompGreenStatLayer(pts_obj, self.p.pc, self.layer, **self.options)
+            return g_pts.field(charges, sig.enei)
 
     def potential(self, sig: CompStruct, pts=None) -> np.ndarray:
-        """Compute potential from surface charges."""
+        """
+        Compute potential from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Potential at points.
+        """
+        from ..greenfun import CompGreenStatLayer
+        from ..particles import ComPoint
+
         charges = sig.get('sig')
         if charges is None:
             raise ValueError("Solution must have 'sig' field")
 
-        return self.g.potential(charges, sig.enei)
+        if pts is None:
+            return self.g.potential(charges, sig.enei)
+        else:
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = CompGreenStatLayer(pts_obj, self.p.pc, self.layer, **self.options)
+            return g_pts.potential(charges, sig.enei)
 
     def __repr__(self) -> str:
         return f"BEMStatLayer(p={self.p}, enei={self._enei})"
