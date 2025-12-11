@@ -560,6 +560,7 @@ class DipoleRetExcitation:
         self.dipole = dipole
         self.particle = particle
         self.wavelength = wavelength
+        self.enei = wavelength  # BEM solver expects this attribute
 
         if hasattr(particle, 'pos'):
             self.pos = particle.pos
@@ -572,7 +573,12 @@ class DipoleRetExcitation:
         """Compute incident fields at surface."""
         eps_out = 1.0
         if hasattr(self.particle, 'eps'):
-            eps_out = self.particle.eps[0](self.wavelength)
+            eps_result = self.particle.eps[0](self.wavelength)
+            # Handle both tuple (eps, k) and scalar returns
+            if isinstance(eps_result, tuple):
+                eps_out = eps_result[0]
+            else:
+                eps_out = eps_result
 
         self.E_inc, self.H_inc = self.dipole.fields(
             self.pos, self.wavelength, eps_out
@@ -600,6 +606,39 @@ class DipoleRetExcitation:
     def a(self):
         """Incident vector potential."""
         return self.A_inc
+
+    def get(self, key: str, default=None):
+        """
+        Get data by key for BEM solver compatibility.
+
+        Maps BEM solver expected keys to internal attributes:
+        - 'phip' -> phi_inc (incident scalar potential)
+        - 'e' -> E_inc (incident electric field)
+        - 'h' -> H_inc (incident magnetic field)
+        - 'a' -> A_inc (incident vector potential)
+
+        Parameters
+        ----------
+        key : str
+            Data key to retrieve
+        default : any, optional
+            Default value if key not found
+
+        Returns
+        -------
+        any
+            Requested data or default
+        """
+        key_map = {
+            'phip': 'phi_inc',
+            'phi': 'phi_inc',
+            'e': 'E_inc',
+            'h': 'H_inc',
+            'a': 'A_inc',
+        }
+
+        attr_name = key_map.get(key, key)
+        return getattr(self, attr_name, default)
 
 
 def dipole_ret(pt, dip, options=None):
