@@ -157,7 +157,7 @@ class ComParticle(Compound):
             Lambda factor for each face.
         """
         n_faces = self.n_faces
-        Lambda = np.zeros(n_faces)
+        Lambda = np.zeros(n_faces, dtype=complex)
 
         face_idx = 0
         for i, particle in enumerate(self.p):
