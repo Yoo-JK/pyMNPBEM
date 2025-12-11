@@ -233,8 +233,15 @@ class DipoleRet:
 
     def _scattered_field_at_dipole(self, sig):
         """Compute scattered field at dipole positions."""
-        particle = sig.particle
-        wavelength = sig.wavelength
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
+        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
 
         k = 2 * np.pi / wavelength
 
@@ -291,7 +298,8 @@ class DipoleRet:
         directions = directions / np.linalg.norm(directions, axis=1, keepdims=True)
 
         n_dir = len(directions)
-        wavelength = sig.wavelength
+        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
+        wavelength = sig.wavelength if hasattr(sig, 'wavelength') else sig.enei
         k = 2 * np.pi / wavelength
 
         power = np.zeros((n_dir, self.n_dip))
@@ -312,7 +320,13 @@ class DipoleRet:
 
     def _induced_dipole(self, sig):
         """Compute induced dipole moment from surface charges."""
-        particle = sig.particle
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
 
         pos = particle.pos if hasattr(particle, 'pos') else particle.pc.pos
         area = particle.area if hasattr(particle, 'area') else particle.pc.area
