@@ -289,7 +289,12 @@ class PlaneWaveRetLayerExcitation:
         """Compute incident fields at surface."""
         eps_out = 1.0
         if hasattr(self.particle, 'eps'):
-            eps_out, _ = self.particle.eps[0](self.wavelength)
+            eps_result = self.particle.eps[0](self.wavelength)
+            # Handle both tuple (eps, k) and scalar returns
+            if isinstance(eps_result, tuple):
+                eps_out = eps_result[0]
+            else:
+                eps_out = eps_result
 
         self.E_inc, self.H_inc = self.planewave.fields(
             self.pos, self.wavelength, eps_out
