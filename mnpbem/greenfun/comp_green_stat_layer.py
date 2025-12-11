@@ -60,7 +60,14 @@ class CompGreenStatLayer:
         self._create_image_particle()
 
         # Initialize Green functions
-        self.g = CompGreenStat(p1, p2, **kwargs)
+        # Handle case where p1 is a Point (not ComParticle/ComPoint)
+        if hasattr(p1, 'pc'):
+            # p1 is ComParticle or ComPoint - use CompGreenStat
+            self.g = CompGreenStat(p1, p2, **kwargs)
+        else:
+            # p1 is Point - use GreenStat directly with underlying particle
+            p2_particle = p2.pc if hasattr(p2, 'pc') else p2
+            self.g = GreenStat(p1, p2_particle, **kwargs)
         if len(self.ind1) > 0 and len(self.ind2) > 0:
             self.gr = self._create_reflected_green(**kwargs)
         else:
