@@ -276,6 +276,7 @@ class PlaneWaveRetLayerExcitation:
         self.planewave = planewave
         self.particle = particle
         self.wavelength = wavelength
+        self.enei = wavelength
 
         if hasattr(particle, 'pos'):
             self.pos = particle.pos
