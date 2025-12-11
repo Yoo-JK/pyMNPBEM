@@ -488,8 +488,14 @@ class GreenRetLayer(GreenRet):
 
     def _init_refinement(self) -> None:
         """Initialize indices for diagonal element refinement."""
-        if self.p1 is self.p2 or (hasattr(self.p1, 'pos') and hasattr(self.p2, 'pos') and
-                                   np.allclose(self.p1.pos, self.p2.pos)):
+        # Only set up diagonal refinement if p1 and p2 are the same object
+        # or have the same positions (same shape required for comparison)
+        if self.p1 is self.p2:
+            n = self.n1
+            self._id = np.arange(n) * n + np.arange(n)
+        elif (hasattr(self.p1, 'pos') and hasattr(self.p2, 'pos') and
+              self.p1.pos.shape == self.p2.pos.shape and
+              np.allclose(self.p1.pos, self.p2.pos)):
             n = self.n1
             self._id = np.arange(n) * n + np.arange(n)
 
