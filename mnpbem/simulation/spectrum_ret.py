@@ -432,6 +432,96 @@ class SpectrumRetCalculator:
         return self._solutions[wavelength]
 
 
+class DecayRateSpectrum:
+    """
+    Compute decay rate spectra for dipole near nanoparticle.
+
+    Parameters
+    ----------
+    dipole : DipoleRet
+        Dipole excitation
+    particle : ComParticle
+        Composite particle
+    bem : BEMRet
+        Retarded BEM solver
+    """
+
+    def __init__(self, dipole, particle, bem, options=None):
+        """Initialize decay rate spectrum calculator."""
+        self.dipole = dipole
+        self.particle = particle
+        self.bem = bem
+        self.options = options
+
+        self._wavelengths = None
+        self._gamma = None
+
+    def compute(self, wavelengths):
+        """
+        Compute decay rate enhancement spectrum.
+
+        Parameters
+        ----------
+        wavelengths : array_like
+            Wavelengths in nm
+
+        Returns
+        -------
+        gamma : ndarray
+            Decay rate enhancement (n_wl, n_dip)
+        """
+        wavelengths = np.atleast_1d(wavelengths)
+        self._wavelengths = wavelengths
+
+        n_wl = len(wavelengths)
+        n_dip = self.dipole.n_dip if hasattr(self.dipole, 'n_dip') else 1
+
+        self._gamma = np.zeros((n_wl, n_dip))
+
+        for i, wl in enumerate(wavelengths):
+            exc = self.dipole(self.particle, wl)
+            sig = self.bem.solve(exc)
+            if hasattr(self.dipole, 'decayrate'):
+                self._gamma[i, :] = self.dipole.decayrate(sig)
+
+        return self._gamma
+
+    def purcell_factor(self, wavelengths=None):
+        """
+        Compute Purcell factor spectrum.
+
+        Same as decay rate enhancement.
+        """
+        if wavelengths is not None:
+            return self.compute(wavelengths)
+        return self._gamma
+
+    def quantum_efficiency(self, wavelengths, eta_0=1.0):
+        """
+        Compute quantum efficiency near particle.
+
+        Parameters
+        ----------
+        wavelengths : array_like
+            Wavelengths in nm
+        eta_0 : float
+            Intrinsic quantum efficiency
+
+        Returns
+        -------
+        eta : ndarray
+            Modified quantum efficiency
+        """
+        gamma = self.compute(wavelengths)
+
+        # eta = eta_0 * gamma_rad / (eta_0 * gamma_rad + (1-eta_0) * gamma_nrad)
+        # Simplified: eta = gamma_rad / gamma_total
+        # For now, assume gamma is total decay rate
+        eta = eta_0 * gamma / (eta_0 * gamma + (1 - eta_0))
+
+        return eta
+
+
 def spectrum_ret(pinfty=None, medium=1, **kwargs):
     """
     Factory function for retarded spectrum calculator.
