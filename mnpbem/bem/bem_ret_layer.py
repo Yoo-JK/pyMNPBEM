@@ -143,16 +143,78 @@ class BEMRetLayer(BEMBase):
         return self.solve(exc)
 
     def field(self, sig: CompStruct, pts=None) -> np.ndarray:
-        """Compute electric field from surface charges."""
+        """
+        Compute electric field from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Electric field, shape (n_pts, 3).
+        """
+        from ..greenfun import GreenRetLayer
+        from ..particles import ComPoint
+
         charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
         k = sig.get('k', self._k)
-        return self.g.field(charges, k)
+
+        if pts is None:
+            # Field at particle surface
+            return self.g.field(charges, k)
+        else:
+            # Field at external points
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenRetLayer(pts_obj, self.p.pc, self.layer, k=k, **self.options)
+            return g_pts.field(charges, k)
 
     def potential(self, sig: CompStruct, pts=None) -> np.ndarray:
-        """Compute potential from surface charges."""
+        """
+        Compute potential from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Potential at points.
+        """
+        from ..greenfun import GreenRetLayer
+        from ..particles import ComPoint
+
         charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
         k = sig.get('k', self._k)
-        return self.g.potential(charges, k)
+
+        if pts is None:
+            return self.g.potential(charges, k)
+        else:
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenRetLayer(pts_obj, self.p.pc, self.layer, k=k, **self.options)
+            return g_pts.potential(charges, k)
 
     def __repr__(self) -> str:
         return f"BEMRetLayer(p={self.p}, enei={self._enei})"
