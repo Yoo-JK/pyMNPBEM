@@ -286,8 +286,10 @@ class BEMStatIter(BEMIter, BEMBase):
             raise ValueError("Solution must have 'sig' field")
 
         if pts is None:
-            # Field at particle surface
-            return self.g.field(charges)
+            # Field at particle surface - use GreenStat directly
+            # (HMatrixGreen doesn't have field method)
+            g_field = GreenStat(self.p.pc, self.p.pc, **self.options)
+            return g_field.field(charges)
         else:
             # Field at external points
             if isinstance(pts, ComPoint):
@@ -325,7 +327,9 @@ class BEMStatIter(BEMIter, BEMBase):
             raise ValueError("Solution must have 'sig' field")
 
         if pts is None:
-            return self.g.potential(charges)
+            # Potential at particle surface - use GreenStat directly
+            g_pot = GreenStat(self.p.pc, self.p.pc, **self.options)
+            return g_pot.potential(charges)
         else:
             if isinstance(pts, ComPoint):
                 pts_obj = pts.pc
@@ -485,7 +489,10 @@ class BEMRetIter(BEMIter, BEMBase):
         k = sig.get('k', self._k)
 
         if pts is None:
-            return self.g.field(charges, k)
+            # Field at particle surface - use GreenRet directly
+            # (HMatrixGreen doesn't have field method)
+            g_field = GreenRet(self.p.pc, self.p.pc, k=k, **self.options)
+            return g_field.field(charges, k)
         else:
             if isinstance(pts, ComPoint):
                 pts_obj = pts.pc
@@ -524,7 +531,9 @@ class BEMRetIter(BEMIter, BEMBase):
         k = sig.get('k', self._k)
 
         if pts is None:
-            return self.g.potential(charges, k)
+            # Potential at particle surface - use GreenRet directly
+            g_pot = GreenRet(self.p.pc, self.p.pc, k=k, **self.options)
+            return g_pot.potential(charges, k)
         else:
             if isinstance(pts, ComPoint):
                 pts_obj = pts.pc
