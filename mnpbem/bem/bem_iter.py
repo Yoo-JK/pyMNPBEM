@@ -10,8 +10,7 @@ from typing import Optional, Callable, Tuple, Union, Any
 from scipy.sparse.linalg import gmres, bicgstab, LinearOperator
 
 from .bem_base import BEMBase
-from ..particles import ComParticle, CompStruct, ComPoint
-from ..misc import Point
+from ..particles import ComParticle, CompStruct, ComPoint, Point
 
 
 class BEMIter:
