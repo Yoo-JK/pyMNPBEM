@@ -6,11 +6,12 @@ matrix inversion becomes expensive.
 """
 
 import numpy as np
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, Union, Any
 from scipy.sparse.linalg import gmres, bicgstab, LinearOperator
 
 from .bem_base import BEMBase
-from ..particles import ComParticle, CompStruct
+from ..particles import ComParticle, CompStruct, ComPoint
+from ..misc import Point
 
 
 class BEMIter:
@@ -259,6 +260,82 @@ class BEMStatIter(BEMIter, BEMBase):
         """Allow bem / exc syntax."""
         return self.solve(exc)
 
+    def field(
+        self,
+        sig: CompStruct,
+        pts: Optional[Union[Point, ComPoint]] = None
+    ) -> np.ndarray:
+        """
+        Compute electric field from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Electric field, shape (n_pts, 3).
+        """
+        from ..greenfun import GreenStat
+
+        charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
+        if pts is None:
+            # Field at particle surface
+            return self.g.field(charges)
+        else:
+            # Field at external points
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenStat(pts_obj, self.p.pc, **self.options)
+            return g_pts.field(charges)
+
+    def potential(
+        self,
+        sig: CompStruct,
+        pts: Optional[Union[Point, ComPoint]] = None
+    ) -> np.ndarray:
+        """
+        Compute potential from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Potential at points.
+        """
+        from ..greenfun import GreenStat
+
+        charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
+        if pts is None:
+            return self.g.potential(charges)
+        else:
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenStat(pts_obj, self.p.pc, **self.options)
+            return g_pts.potential(charges)
+
     def __repr__(self) -> str:
         return f"BEMStatIter(n={self.n_faces}, method='{self.method}')"
 
@@ -379,6 +456,84 @@ class BEMRetIter(BEMIter, BEMBase):
     def __truediv__(self, exc: CompStruct) -> CompStruct:
         """Allow bem / exc syntax."""
         return self.solve(exc)
+
+    def field(
+        self,
+        sig: CompStruct,
+        pts: Optional[Union[Point, ComPoint]] = None
+    ) -> np.ndarray:
+        """
+        Compute electric field from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Electric field, shape (n_pts, 3).
+        """
+        from ..greenfun import GreenRet
+
+        charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
+        k = sig.get('k', self._k)
+
+        if pts is None:
+            return self.g.field(charges, k)
+        else:
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenRet(pts_obj, self.p.pc, k=k, **self.options)
+            return g_pts.field(charges, k)
+
+    def potential(
+        self,
+        sig: CompStruct,
+        pts: Optional[Union[Point, ComPoint]] = None
+    ) -> np.ndarray:
+        """
+        Compute potential from surface charges.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges.
+        pts : Point or ComPoint, optional
+            Evaluation points. If None, evaluates at particle surface.
+
+        Returns
+        -------
+        ndarray
+            Potential at points.
+        """
+        from ..greenfun import GreenRet
+
+        charges = sig.get('sig')
+        if charges is None:
+            raise ValueError("Solution must have 'sig' field")
+
+        k = sig.get('k', self._k)
+
+        if pts is None:
+            return self.g.potential(charges, k)
+        else:
+            if isinstance(pts, ComPoint):
+                pts_obj = pts.pc
+            else:
+                pts_obj = pts
+
+            g_pts = GreenRet(pts_obj, self.p.pc, k=k, **self.options)
+            return g_pts.potential(charges, k)
 
     def __repr__(self) -> str:
         return f"BEMRetIter(n={self.n_faces}, method='{self.method}')"
