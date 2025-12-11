@@ -3,6 +3,14 @@ Retarded plane wave excitation for BEM simulations.
 
 This module provides full electromagnetic plane wave excitation
 that includes retardation effects for larger particles.
+
+The excitation computes vector potentials A and their surface derivatives
+for use in the retarded BEM solver (Garcia de Abajo & Howie, PRB 65, 115418).
+
+For plane waves:
+- Scalar potential phi = 0 (transverse wave)
+- Vector potential A = pol * exp(i*k*r) / (i*k0)
+- Surface derivative Ap = (i*k * n.dir) * A
 """
 
 import numpy as np
@@ -15,7 +23,7 @@ class PlaneWaveRet:
 
     For particles comparable to or larger than the wavelength,
     retardation effects must be included. This class provides
-    the full electromagnetic plane wave fields.
+    the full electromagnetic plane wave fields and potentials.
 
     Parameters
     ----------
@@ -23,7 +31,9 @@ class PlaneWaveRet:
         Polarization directions (n_pol, 3)
     dir : array_like
         Propagation directions (n_pol, 3)
-    options : BEMOptions, optional
+    medium : int, optional
+        Index of medium through which excitation enters (1-based, default 1).
+    options : dict, optional
         BEM simulation options
 
     Attributes
@@ -32,18 +42,26 @@ class PlaneWaveRet:
         Normalized polarization vectors
     dir : ndarray
         Normalized propagation directions
-    kvec : ndarray
-        Wave vectors (computed for each wavelength)
+    medium : int
+        Exciting medium index (1-based, MATLAB convention)
+    n_pol : int
+        Number of polarizations
+
+    References
+    ----------
+    Garcia de Abajo & Howie, PRB 65, 115418 (2002)
     """
 
-    def __init__(self, pol, dir, options=None):
+    def __init__(self, pol, dir, medium=1, options=None):
         """Initialize retarded plane wave excitation."""
         self.pol = np.atleast_2d(pol).astype(float)
         self.dir = np.atleast_2d(dir).astype(float)
-        self.options = options
+        self.medium = medium  # 1-based index (MATLAB convention)
+        self.options = options if options is not None else {}
 
         # Normalize directions
-        self.dir = self.dir / np.linalg.norm(self.dir, axis=1, keepdims=True)
+        dir_norms = np.linalg.norm(self.dir, axis=1, keepdims=True)
+        self.dir = self.dir / np.where(dir_norms > 1e-10, dir_norms, 1.0)
 
         # Ensure polarization is perpendicular to direction
         for i in range(len(self.pol)):
@@ -58,6 +76,7 @@ class PlaneWaveRet:
         self.n_pol = len(self.pol)
         self._wavelength = None
         self._k = None
+        self._spec = None  # For spectrum calculations
 
     def __call__(self, particle, wavelength):
         """
@@ -73,7 +92,7 @@ class PlaneWaveRet:
         Returns
         -------
         exc : PlaneWaveRetExcitation
-            Excitation object with fields and potentials
+            Excitation object with fields and potentials for BEM solver
         """
         self._wavelength = wavelength
         self._k = 2 * np.pi / wavelength  # Wave number in vacuum
@@ -103,96 +122,51 @@ class PlaneWaveRet:
         pos = np.atleast_2d(pos)
         n_pos = len(pos)
 
-        # Wave number in medium
+        # Wave number in vacuum and medium
+        k0 = 2 * np.pi / wavelength
         n_med = np.sqrt(eps_out)
-        k = 2 * np.pi * n_med / wavelength
-
-        # Speed of light factor for H field
-        # H = sqrt(eps/mu) * (k x E) / |k|
-        # In Gaussian units: H = n * (k_hat x E)
+        k = k0 * n_med
 
         E = np.zeros((n_pos, self.n_pol, 3), dtype=complex)
         H = np.zeros((n_pos, self.n_pol, 3), dtype=complex)
 
         for i in range(self.n_pol):
-            # Wave vector
+            # Wave vector in medium
             kvec = k * self.dir[i]
 
             # Phase factor exp(i k.r)
             phase = np.exp(1j * pos @ kvec)
 
             # Electric field: E = E0 * pol * exp(i k.r)
+            # Note: E0 amplitude is normalized to 1
             E[:, i, :] = phase[:, np.newaxis] * self.pol[i]
 
             # Magnetic field: H = n * (k_hat x E)
-            k_cross_E = np.cross(self.dir[i], self.pol[i])
-            H[:, i, :] = n_med * phase[:, np.newaxis] * k_cross_E
+            k_cross_pol = np.cross(self.dir[i], self.pol[i])
+            H[:, i, :] = n_med * phase[:, np.newaxis] * k_cross_pol
 
         return E, H
 
-    def potentials(self, pos, wavelength, eps_out=1.0):
+    def set_spectrum(self, spec):
         """
-        Compute scalar and vector potentials at positions.
-
-        In Lorenz gauge, for plane wave:
-        phi = 0 (transverse wave)
-        A = E / (i * omega) = E * wavelength / (2 * pi * i * c)
+        Set spectrum object for cross-section calculations.
 
         Parameters
         ----------
-        pos : ndarray
-            Positions (n_pos, 3)
-        wavelength : float
-            Wavelength in nm
-        eps_out : complex
-            Dielectric function of surrounding medium
-
-        Returns
-        -------
-        phi : ndarray
-            Scalar potential (n_pos, n_pol) - zero for plane wave
-        A : ndarray
-            Vector potential (n_pos, n_pol, 3)
+        spec : SpectrumRet
+            Spectrum calculator with pinfty (unit sphere)
         """
-        E, H = self.fields(pos, wavelength, eps_out)
+        self._spec = spec
 
-        n_pos = len(pos)
-
-        # Scalar potential is zero for transverse plane wave
-        phi = np.zeros((n_pos, self.n_pol), dtype=complex)
-
-        # Vector potential A = E / (i * omega)
-        # omega = 2 * pi * c / wavelength
-        # A = E * wavelength / (2 * pi * i * c)
-        # In our units (nm, with c absorbed): A proportional to E / k
-        k = 2 * np.pi / wavelength
-        A = E / (1j * k)
-
-        return phi, A
-
-    def sca(self, sig):
+    def extinction(self, sig):
         """
-        Compute scattering cross section.
+        Compute extinction cross section using optical theorem.
+
+        C_ext = 4*pi/k * Im(pol* . E_forward)
 
         Parameters
         ----------
-        sig : Solution
-            BEM solution with surface charges and currents
-
-        Returns
-        -------
-        sca : ndarray
-            Scattering cross section for each polarization
-        """
-        return self._cross_section(sig, 'sca')
-
-    def ext(self, sig):
-        """
-        Compute extinction cross section.
-
-        Parameters
-        ----------
-        sig : Solution
+        sig : CompStruct
             BEM solution with surface charges and currents
 
         Returns
@@ -200,161 +174,83 @@ class PlaneWaveRet:
         ext : ndarray
             Extinction cross section for each polarization
         """
-        return self._cross_section(sig, 'ext')
+        if self._spec is None:
+            raise ValueError("Spectrum object not set. Use set_spectrum() first.")
 
-    def abs(self, sig):
+        # Get far-field amplitude in forward direction
+        field, k = self._spec.farfield(sig, self.dir)
+
+        # Optical theorem: C_ext = 4*pi/k * Im(pol* . E)
+        # Note: inner() in MATLAB takes conjugate of first argument
+        ext = np.zeros(self.n_pol)
+        for i in range(self.n_pol):
+            E_forward = field.e[i, :, i] if field.e.ndim == 3 else field.e[i, :]
+            ext[i] = 4 * np.pi / k * np.imag(np.vdot(self.pol[i], E_forward))
+
+        return ext
+
+    def scattering(self, sig):
+        """
+        Compute scattering cross section.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges and currents
+
+        Returns
+        -------
+        sca : ndarray
+            Scattering cross section for each polarization
+        dsca : dict
+            Differential scattering cross section
+        """
+        if self._spec is None:
+            raise ValueError("Spectrum object not set. Use set_spectrum() first.")
+
+        sca, dsca = self._spec.scattering(sig)
+
+        # Get refractive index of embedding medium
+        eps_bg = sig.p.eps[0](sig.enei)
+        if isinstance(eps_bg, tuple):
+            eps_bg = eps_bg[0]
+        nb = np.sqrt(eps_bg)
+
+        # Normalize by incoming power (0.5 * epsb * c/n)
+        sca = sca / (0.5 * nb)
+        if dsca is not None:
+            dsca['dsca'] = dsca['dsca'] / (0.5 * nb)
+
+        return sca, dsca
+
+    def absorption(self, sig):
         """
         Compute absorption cross section.
 
         Parameters
         ----------
-        sig : Solution
-            BEM solution with surface charges and currents
+        sig : CompStruct
+            BEM solution
 
         Returns
         -------
         abs : ndarray
             Absorption cross section for each polarization
         """
-        ext = self.ext(sig)
-        sca = self.sca(sig)
-        return ext - sca
+        return self.extinction(sig) - self.scattering(sig)[0]
 
-    def _cross_section(self, sig, cstype):
-        """Compute cross sections from BEM solution."""
-        # Support both sig.particle and sig.p (CompStruct uses 'p')
-        if hasattr(sig, 'particle'):
-            particle = sig.particle
-        elif hasattr(sig, 'p'):
-            particle = sig.p
-        else:
-            raise AttributeError("sig must have 'particle' or 'p' attribute")
-        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
-        if hasattr(sig, 'wavelength'):
-            wavelength = sig.wavelength
-        elif hasattr(sig, 'enei'):
-            wavelength = sig.enei
-        else:
-            raise AttributeError("sig must have 'wavelength' or 'enei' attribute")
+    # Legacy methods for backward compatibility
+    def sca(self, sig):
+        """Compute scattering cross section (legacy interface)."""
+        return self.scattering(sig)[0]
 
-        k = 2 * np.pi / wavelength
+    def ext(self, sig):
+        """Compute extinction cross section (legacy interface)."""
+        return self.extinction(sig)
 
-        # Get particle surface data
-        pos = particle.pos if hasattr(particle, 'pos') else particle.pc.pos
-        nvec = particle.nvec if hasattr(particle, 'nvec') else particle.pc.nvec
-        area = particle.area if hasattr(particle, 'area') else particle.pc.area
-
-        # Surface charges and currents
-        sigma = sig.sig  # Surface charge (n_faces, n_pol)
-
-        if cstype == 'ext':
-            # Extinction from optical theorem
-            # C_ext = 4*pi/k * Im(f(0)) = 4*pi/k * Im(E0* . p)
-            # where p is the induced dipole moment
-
-            ext = np.zeros(self.n_pol)
-
-            for i in range(self.n_pol):
-                # Induced dipole moment
-                if sigma.ndim == 1:
-                    charge = sigma
-                else:
-                    charge = sigma[:, i] if i < sigma.shape[1] else sigma[:, 0]
-
-                # Dipole moment from charges
-                dipole = np.sum(charge[:, np.newaxis] * area[:, np.newaxis] * pos, axis=0)
-
-                # Extinction
-                ext[i] = 4 * np.pi * k * np.imag(np.dot(np.conj(self.pol[i]), dipole))
-
-            return ext
-
-        elif cstype == 'sca':
-            # Scattering cross section
-            # Integrate scattered power over sphere
-
-            sca = np.zeros(self.n_pol)
-
-            for i in range(self.n_pol):
-                if sigma.ndim == 1:
-                    charge = sigma
-                else:
-                    charge = sigma[:, i] if i < sigma.shape[1] else sigma[:, 0]
-
-                # Dipole approximation for small particles
-                dipole = np.sum(charge[:, np.newaxis] * area[:, np.newaxis] * pos, axis=0)
-
-                # Scattering from dipole: C_sca = k^4 / (6*pi) * |p|^2
-                sca[i] = k**4 / (6 * np.pi) * np.abs(np.dot(dipole, dipole))
-
-            return sca
-
-        else:
-            raise ValueError(f"Unknown cross section type: {cstype}")
-
-    def farfield(self, sig, directions):
-        """
-        Compute far-field scattering amplitude.
-
-        Parameters
-        ----------
-        sig : Solution
-            BEM solution
-        directions : ndarray
-            Scattering directions (n_dir, 3)
-
-        Returns
-        -------
-        E_sca : ndarray
-            Scattered electric field amplitude (n_dir, n_pol, 3)
-        """
-        directions = np.atleast_2d(directions)
-        directions = directions / np.linalg.norm(directions, axis=1, keepdims=True)
-
-        n_dir = len(directions)
-        # Support both sig.particle and sig.p (CompStruct uses 'p')
-        if hasattr(sig, 'particle'):
-            particle = sig.particle
-        elif hasattr(sig, 'p'):
-            particle = sig.p
-        else:
-            raise AttributeError("sig must have 'particle' or 'p' attribute")
-        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
-        if hasattr(sig, 'wavelength'):
-            wavelength = sig.wavelength
-        elif hasattr(sig, 'enei'):
-            wavelength = sig.enei
-        else:
-            raise AttributeError("sig must have 'wavelength' or 'enei' attribute")
-
-        k = 2 * np.pi / wavelength
-
-        pos = particle.pos if hasattr(particle, 'pos') else particle.pc.pos
-        area = particle.area if hasattr(particle, 'area') else particle.pc.area
-        sigma = sig.sig
-
-        E_sca = np.zeros((n_dir, self.n_pol, 3), dtype=complex)
-
-        for i in range(self.n_pol):
-            if sigma.ndim == 1:
-                charge = sigma
-            else:
-                charge = sigma[:, i] if i < sigma.shape[1] else sigma[:, 0]
-
-            for j, sdir in enumerate(directions):
-                # Phase factors for each surface element
-                phase = np.exp(-1j * k * pos @ sdir)
-
-                # Dipole moment contribution with phase
-                p_eff = np.sum(charge[:, np.newaxis] * area[:, np.newaxis] *
-                              phase[:, np.newaxis] * pos, axis=0)
-
-                # Far-field: E_sca ~ k^2 * (r_hat x (r_hat x p)) * exp(ikr)/r
-                # The (r_hat x (r_hat x p)) projects out the radial component
-                r_cross_p = np.cross(sdir, p_eff)
-                E_sca[j, i, :] = k**2 * np.cross(sdir, r_cross_p)
-
-        return E_sca
+    def abs(self, sig):
+        """Compute absorption cross section (legacy interface)."""
+        return self.absorption(sig)
 
 
 class PlaneWaveRetExcitation:
@@ -362,40 +258,176 @@ class PlaneWaveRetExcitation:
     Excitation object for retarded plane wave.
 
     Stores precomputed fields and potentials for BEM solution.
+    Computes vector potentials and their surface derivatives as required
+    by the retarded BEM solver.
+
+    For plane wave excitation (MATLAB planewaveret/potential.m):
+    - phi1, phi2 = 0 (scalar potential is zero for transverse wave)
+    - a1, a2 = vector potential inside/outside
+    - a1p, a2p = surface derivative of vector potential
+
+    The vector potential is computed as:
+        A = pol * exp(i*k*r) / (i*k0)
+
+    And its surface derivative:
+        Ap = (i*k * n.dir) * A
+
+    Attributes
+    ----------
+    planewave : PlaneWaveRet
+        Parent plane wave object
+    particle : ComParticle
+        Composite particle
+    wavelength : float
+        Wavelength in nm
+    enei : float
+        Alias for wavelength (BEM solver compatibility)
+    a1, a2 : ndarray
+        Vector potential inside/outside, shape (n_faces, 3, n_pol)
+    a1p, a2p : ndarray
+        Surface derivative of vector potential, shape (n_faces, 3, n_pol)
+    phi1, phi2 : ndarray
+        Scalar potential (zero for plane wave)
+    phi1p, phi2p : ndarray
+        Surface derivative of scalar potential (zero)
+    E_inc, H_inc : ndarray
+        Incident electric/magnetic fields
     """
 
     def __init__(self, planewave, particle, wavelength):
-        """Initialize excitation."""
+        """
+        Initialize excitation.
+
+        Parameters
+        ----------
+        planewave : PlaneWaveRet
+            Parent plane wave object
+        particle : ComParticle
+            Composite particle
+        wavelength : float
+            Wavelength in nm
+        """
         self.planewave = planewave
         self.particle = particle
         self.wavelength = wavelength
         self.enei = wavelength  # BEM solver expects this attribute
 
-        # Get positions
+        # Get particle properties
         if hasattr(particle, 'pos'):
             self.pos = particle.pos
+            self.nvec = particle.nvec
+            self.n_faces = particle.n_faces
         else:
             self.pos = particle.pc.pos
+            self.nvec = particle.pc.nvec
+            self.n_faces = particle.pc.n_faces
 
-        # Compute incident fields at particle surface
+        # Get inout array (which medium each face belongs to)
+        if hasattr(particle, 'inout'):
+            self.inout = particle.inout
+        else:
+            # Default: all faces are [2, 1] (material 2 inside, medium 1 outside)
+            self.inout = np.array([[2, 1]] * len(particle.p))
+
+        # Compute potentials and fields
+        self._compute_potentials()
         self._compute_fields()
 
+    def _compute_potentials(self):
+        """
+        Compute vector potentials for BEM solver.
+
+        Following MATLAB planewaveret/potential.m exactly.
+        """
+        pol = self.planewave.pol
+        dir = self.planewave.dir
+        medium = self.planewave.medium
+        n_pol = self.planewave.n_pol
+
+        # Wavenumber in vacuum
+        k0 = 2 * np.pi / self.wavelength
+
+        # Get refractive index of exciting medium
+        eps_med = self.particle.eps[medium - 1](self.wavelength)  # 0-based
+        if isinstance(eps_med, tuple):
+            eps_med = eps_med[0]
+        nb = np.sqrt(eps_med)
+
+        # Wavenumber in medium
+        k = k0 * nb
+
+        # Initialize arrays
+        # Shape: (n_faces, 3, n_pol) for vector quantities
+        self.a1 = np.zeros((self.n_faces, 3, n_pol), dtype=complex)
+        self.a1p = np.zeros((self.n_faces, 3, n_pol), dtype=complex)
+        self.a2 = np.zeros((self.n_faces, 3, n_pol), dtype=complex)
+        self.a2p = np.zeros((self.n_faces, 3, n_pol), dtype=complex)
+
+        # Scalar potentials are zero for plane wave (transverse)
+        self.phi1 = np.zeros((self.n_faces, n_pol), dtype=complex)
+        self.phi1p = np.zeros((self.n_faces, n_pol), dtype=complex)
+        self.phi2 = np.zeros((self.n_faces, n_pol), dtype=complex)
+        self.phi2p = np.zeros((self.n_faces, n_pol), dtype=complex)
+
+        # Loop over inside (inout=0) and outside (inout=1) of particle surfaces
+        # Note: Python uses 0-based indexing, MATLAB uses 1-based
+        for inout_idx in range(2):  # 0=inside, 1=outside
+            # Find faces where this inout side belongs to the exciting medium
+            # self.inout has shape (n_particles, 2) where [:, 0]=inside, [:, 1]=outside
+            # Need to map particle index to face indices
+
+            face_start = 0
+            ind_list = []
+
+            for p_idx, p in enumerate(self.particle.p):
+                n_faces_p = p.n_faces
+                face_end = face_start + n_faces_p
+
+                # Check if this particle's inout matches exciting medium
+                if self.particle.inout[p_idx, inout_idx] == medium:
+                    ind_list.extend(range(face_start, face_end))
+
+                face_start = face_end
+
+            ind = np.array(ind_list, dtype=int)
+
+            if len(ind) == 0:
+                continue
+
+            # Compute vector potential for each polarization
+            for i in range(n_pol):
+                # Phase factor: exp(i*k*r) / (i*k0)
+                # Note: divide by (i*k0), not (i*k) - this is the MATLAB convention
+                phase = np.exp(1j * k * (self.pos[ind] @ dir[i])) / (1j * k0)
+
+                # Vector potential: A = phase * pol
+                a = np.outer(phase, pol[i])  # (len(ind), 3)
+
+                # Surface derivative: Ap = (i*k * n.dir) * A
+                # n.dir is the dot product of normal vector with propagation direction
+                n_dot_dir = self.nvec[ind] @ dir[i]  # (len(ind),)
+                ap = (1j * k * n_dot_dir)[:, np.newaxis] * a  # (len(ind), 3)
+
+                # Store in appropriate array
+                if inout_idx == 0:  # inside
+                    self.a1[ind, :, i] = a
+                    self.a1p[ind, :, i] = ap
+                else:  # outside
+                    self.a2[ind, :, i] = a
+                    self.a2p[ind, :, i] = ap
+
     def _compute_fields(self):
-        """Compute incident fields at surface positions."""
+        """Compute incident electric and magnetic fields at surface positions."""
         # Get medium dielectric function
         eps_out = 1.0
         if hasattr(self.particle, 'eps'):
             eps_result = self.particle.eps[0](self.wavelength)
-            # Handle both tuple (eps, k) and scalar returns
             if isinstance(eps_result, tuple):
                 eps_out = eps_result[0]
             else:
                 eps_out = eps_result
 
         self.E_inc, self.H_inc = self.planewave.fields(
-            self.pos, self.wavelength, eps_out
-        )
-        self.phi_inc, self.A_inc = self.planewave.potentials(
             self.pos, self.wavelength, eps_out
         )
 
@@ -406,28 +438,17 @@ class PlaneWaveRetExcitation:
 
     @property
     def h(self):
-        """Incident magnetic field."""
+        """Incident magnetic field (not surface current)."""
         return self.H_inc
-
-    @property
-    def phi(self):
-        """Incident scalar potential."""
-        return self.phi_inc
-
-    @property
-    def a(self):
-        """Incident vector potential."""
-        return self.A_inc
 
     def get(self, key: str, default=None):
         """
         Get data by key for BEM solver compatibility.
 
-        Maps BEM solver expected keys to internal attributes:
-        - 'phip' -> phi_inc (incident scalar potential)
-        - 'e' -> E_inc (incident electric field)
-        - 'h' -> H_inc (incident magnetic field)
-        - 'a' -> A_inc (incident vector potential)
+        Supports all fields required by retarded BEM solver:
+        - Vector potentials: a1, a1p, a2, a2p
+        - Scalar potentials: phi1, phi1p, phi2, phi2p (zero for plane wave)
+        - Fields: e, h
 
         Parameters
         ----------
@@ -441,19 +462,32 @@ class PlaneWaveRetExcitation:
         any
             Requested data or default
         """
+        # Direct attribute access for known keys
         key_map = {
-            'phip': 'phi_inc',
-            'phi': 'phi_inc',
+            # Vector potentials (required for retarded BEM)
+            'a1': 'a1',
+            'a1p': 'a1p',
+            'a2': 'a2',
+            'a2p': 'a2p',
+            # Scalar potentials (zero for plane wave)
+            'phi1': 'phi1',
+            'phi1p': 'phi1p',
+            'phi2': 'phi2',
+            'phi2p': 'phi2p',
+            # Legacy keys
+            'phip': 'phi1p',  # For quasistatic compatibility
+            'phi': 'phi1',
+            # Fields
             'e': 'E_inc',
             'h': 'H_inc',
-            'a': 'A_inc',
+            'a': 'a1',  # Legacy: vector potential
         }
 
         attr_name = key_map.get(key, key)
         return getattr(self, attr_name, default)
 
 
-def planewave_ret(pol, dir, options=None):
+def planewave_ret(pol, dir, medium=1, options=None):
     """
     Factory function for retarded plane wave excitation.
 
@@ -463,7 +497,9 @@ def planewave_ret(pol, dir, options=None):
         Polarization directions
     dir : array_like
         Propagation directions
-    options : BEMOptions, optional
+    medium : int, optional
+        Index of exciting medium (1-based)
+    options : dict, optional
         Simulation options
 
     Returns
@@ -471,4 +507,4 @@ def planewave_ret(pol, dir, options=None):
     PlaneWaveRet
         Plane wave excitation object
     """
-    return PlaneWaveRet(pol, dir, options)
+    return PlaneWaveRet(pol, dir, medium, options)
