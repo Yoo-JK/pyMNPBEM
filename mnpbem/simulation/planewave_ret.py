@@ -222,7 +222,13 @@ class PlaneWaveRet:
 
     def _cross_section(self, sig, cstype):
         """Compute cross sections from BEM solution."""
-        particle = sig.particle
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
         wavelength = sig.wavelength
 
         k = 2 * np.pi / wavelength
@@ -300,7 +306,13 @@ class PlaneWaveRet:
         directions = directions / np.linalg.norm(directions, axis=1, keepdims=True)
 
         n_dir = len(directions)
-        particle = sig.particle
+        # Support both sig.particle and sig.p (CompStruct uses 'p')
+        if hasattr(sig, 'particle'):
+            particle = sig.particle
+        elif hasattr(sig, 'p'):
+            particle = sig.p
+        else:
+            raise AttributeError("sig must have 'particle' or 'p' attribute")
         wavelength = sig.wavelength
 
         k = 2 * np.pi / wavelength
