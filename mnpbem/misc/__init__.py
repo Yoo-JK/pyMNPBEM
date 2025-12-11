@@ -25,7 +25,7 @@ from .geometry import (
 )
 from .meshfield import (
     MeshField, meshfield, interpolate_field, field_at_points,
-    GridField, gridfield
+    GridField, gridfield, GridFieldPoints
 )
 from .arrays import (
     ValArray, VecArray, valarray, vecarray,
@@ -98,6 +98,7 @@ __all__ = [
     "meshfield",
     "GridField",
     "gridfield",
+    "GridFieldPoints",
     "interpolate_field",
     "field_at_points",
     # Arrays

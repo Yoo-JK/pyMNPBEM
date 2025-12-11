@@ -159,15 +159,17 @@ class GreenRet:
 
         d, _ = self._compute_distances()
 
-        # Avoid division by zero on diagonal
-        d_safe = np.where(d == 0, np.inf, d)
+        # Identify self-terms (zero distance)
+        self_mask = (d == 0)
+
+        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        d_safe = np.where(self_mask, 1.0, d)
 
         # Retarded Green function: exp(i*k*r) / (4*pi*r)
         G = np.exp(1j * k * d_safe) / (4 * np.pi * d_safe)
 
-        # Handle self-terms (diagonal)
-        if self.n1 == self.n2:
-            np.fill_diagonal(G, 0)
+        # Set self-terms to zero (they would be singular anyway)
+        G[self_mask] = 0
 
         # Multiply by face areas for integration
         G = G * self.p2.area[np.newaxis, :]
@@ -203,8 +205,11 @@ class GreenRet:
 
         d, dr = self._compute_distances()
 
-        # Avoid division by zero
-        d_safe = np.where(d == 0, np.inf, d)
+        # Identify self-terms (zero distance)
+        self_mask = (d == 0)
+
+        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        d_safe = np.where(self_mask, 1.0, d)
 
         # grad G = (i*k - 1/r) * G * r_hat
         # where r_hat = (r_j - r_i) / r
@@ -220,9 +225,8 @@ class GreenRet:
 
         F = factor * n_dot_rhat
 
-        # Handle self-terms
-        if self.n1 == self.n2:
-            np.fill_diagonal(F, 0)
+        # Set self-terms to zero (they would be singular anyway)
+        F[self_mask] = 0
 
         # Multiply by face areas
         F = F * self.p2.area[np.newaxis, :]
@@ -287,8 +291,11 @@ class GreenRet:
 
         d, dr = self._compute_distances()
 
-        # Avoid division by zero
-        d_safe = np.where(d == 0, np.inf, d)
+        # Identify self-terms (zero distance)
+        self_mask = (d == 0)
+
+        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        d_safe = np.where(self_mask, 1.0, d)
 
         # grad G = (i*k - 1/r) * exp(i*k*r) / (4*pi*r) * r_hat
         exp_ikr = np.exp(1j * k * d_safe)
@@ -297,10 +304,8 @@ class GreenRet:
         # Gp[i, j, :] = factor[i,j] * dr[i,j,:]
         Gp = factor[:, :, np.newaxis] * dr
 
-        # Handle self-terms
-        if self.n1 == self.n2:
-            for i in range(min(self.n1, self.n2)):
-                Gp[i, i, :] = 0
+        # Set self-terms to zero (they would be singular anyway)
+        Gp[self_mask, :] = 0
 
         # Multiply by face areas
         Gp = Gp * self.p2.area[np.newaxis, :, np.newaxis]
@@ -333,7 +338,12 @@ class GreenRet:
             return self._L
 
         d, dr = self._compute_distances()
-        d_safe = np.where(d == 0, np.inf, d)
+
+        # Identify self-terms (zero distance)
+        self_mask = (d == 0)
+
+        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        d_safe = np.where(self_mask, 1.0, d)
 
         # Unit vectors
         r_hat = dr / d_safe[:, :, np.newaxis]
@@ -346,7 +356,7 @@ class GreenRet:
         # G_ij = g0 * [(1 + i/(kr) - 1/(kr)^2) * delta_ij
         #              + (-1 - 3i/(kr) + 3/(kr)^2) * r_i * r_j / r^2]
         kr = k * d_safe
-        kr_safe = np.where(kr == 0, np.inf, kr)
+        kr_safe = np.where(self_mask, 1.0, kr)  # Avoid division by zero
 
         coef1 = 1 + 1j / kr_safe - 1 / kr_safe ** 2
         coef2 = -1 - 3j / kr_safe + 3 / kr_safe ** 2
@@ -357,6 +367,9 @@ class GreenRet:
             for j in range(3):
                 delta_ij = 1.0 if i == j else 0.0
                 L[:, :, i, j] = g0 * (coef1 * delta_ij + coef2 * r_hat[:, :, i] * r_hat[:, :, j])
+
+        # Set self-terms to zero (they would be singular anyway)
+        L[self_mask, :, :] = 0
 
         # Multiply by face areas
         L = L * self.p2.area[np.newaxis, :, np.newaxis, np.newaxis]
