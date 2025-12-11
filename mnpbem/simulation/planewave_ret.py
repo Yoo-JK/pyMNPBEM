@@ -229,7 +229,13 @@ class PlaneWaveRet:
             particle = sig.p
         else:
             raise AttributeError("sig must have 'particle' or 'p' attribute")
-        wavelength = sig.wavelength
+        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
+        if hasattr(sig, 'wavelength'):
+            wavelength = sig.wavelength
+        elif hasattr(sig, 'enei'):
+            wavelength = sig.enei
+        else:
+            raise AttributeError("sig must have 'wavelength' or 'enei' attribute")
 
         k = 2 * np.pi / wavelength
 
@@ -313,7 +319,13 @@ class PlaneWaveRet:
             particle = sig.p
         else:
             raise AttributeError("sig must have 'particle' or 'p' attribute")
-        wavelength = sig.wavelength
+        # Support both sig.wavelength and sig.enei (CompStruct uses 'enei')
+        if hasattr(sig, 'wavelength'):
+            wavelength = sig.wavelength
+        elif hasattr(sig, 'enei'):
+            wavelength = sig.enei
+        else:
+            raise AttributeError("sig must have 'wavelength' or 'enei' attribute")
 
         k = 2 * np.pi / wavelength
 
