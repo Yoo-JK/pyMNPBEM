@@ -127,6 +127,27 @@ class GridField:
         """Number of evaluation points."""
         return len(self._pos)
 
+    @property
+    def pt(self) -> 'GridFieldPoints':
+        """
+        Point object for grid positions (MATLAB meshfield.pt equivalent).
+
+        This property provides access to grid positions in a format
+        compatible with excitation field computation.
+
+        Returns
+        -------
+        GridFieldPoints
+            Point-like object with pos attribute for field evaluation.
+
+        Examples
+        --------
+        >>> mf = GridField(p, xx, yy, zz)
+        >>> # Compute incident field at grid points
+        >>> E_inc, H_inc = exc.fields(mf.pt.pos, wavelength)
+        """
+        return GridFieldPoints(self._pos, self.original_shape)
+
     def _init_green(self, enei: float):
         """Initialize Green function if needed."""
         if self._green_cls is None:
@@ -305,8 +326,206 @@ class GridField:
 
         return phi.reshape(self.original_shape)
 
+    def total_field(
+        self,
+        sig: Any,
+        exc: Any,
+        enei: Optional[float] = None,
+        eps_out: float = 1.0
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """
+        Compute total electromagnetic fields (scattered + incident).
+
+        This method computes the total field by adding:
+        1. Scattered field from BEM solution (at grid points)
+        2. Incident field from excitation (at grid points)
+
+        This is equivalent to MATLAB's:
+            e = emesh(sig) + emesh(exc.field(emesh.pt, enei))
+
+        Parameters
+        ----------
+        sig : CompStruct
+            Surface charges and currents from BEM solution.
+        exc : PlaneWave or similar
+            Excitation object with fields() method.
+        enei : float, optional
+            Wavelength (nm). If None, uses sig.enei.
+        eps_out : float, optional
+            Dielectric function of surrounding medium.
+
+        Returns
+        -------
+        e_total : ndarray
+            Total electric field with shape matching input grid + (3,).
+        h_total : ndarray or None
+            Total magnetic field (None for quasistatic simulations).
+
+        Examples
+        --------
+        >>> mf = GridField(p, xx, yy, 0)
+        >>> e_total, h_total = mf.total_field(sig, exc, wavelength)
+        """
+        # Get wavelength from sig if not provided
+        if enei is None:
+            enei = getattr(sig, 'enei', None)
+            if enei is None and hasattr(sig, 'get'):
+                enei = sig.get('enei')
+
+        if enei is None:
+            raise ValueError("Wavelength (enei) must be provided or available in sig")
+
+        # Compute scattered field at grid points
+        e_scat, h_scat = self.field(sig, enei)
+
+        # Compute incident field at grid points
+        # The excitation object should have a fields() method
+        if hasattr(exc, 'fields'):
+            E_inc, H_inc = exc.fields(self._pos, enei, eps_out)
+        elif hasattr(exc, 'planewave') and hasattr(exc.planewave, 'fields'):
+            # Handle excitation objects that wrap a planewave
+            E_inc, H_inc = exc.planewave.fields(self._pos, enei, eps_out)
+        else:
+            raise ValueError("Excitation object must have a fields() method")
+
+        # Handle different polarization dimensions
+        # E_inc shape is typically (n_pos, n_pol, 3)
+        # e_scat shape is typically (*original_shape, 3) or (*original_shape, 3, n_pol)
+        if E_inc.ndim == 3 and E_inc.shape[1] > 1:
+            # Multiple polarizations - reshape incident field to match grid
+            n_pol = E_inc.shape[1]
+            E_inc_reshaped = E_inc.reshape(self.original_shape + (n_pol, 3))
+            # Swap axes to match scattered field shape
+            E_inc_reshaped = np.moveaxis(E_inc_reshaped, -2, -1)  # (..., 3, n_pol)
+        elif E_inc.ndim == 3 and E_inc.shape[1] == 1:
+            # Single polarization
+            E_inc_reshaped = E_inc[:, 0, :].reshape(self.original_shape + (3,))
+        else:
+            E_inc_reshaped = E_inc.reshape(self.original_shape + (3,))
+
+        # Add scattered and incident fields
+        # Need to handle shape broadcasting
+        if e_scat.shape == E_inc_reshaped.shape:
+            e_total = e_scat + E_inc_reshaped
+        elif e_scat.ndim > E_inc_reshaped.ndim:
+            # e_scat has extra dimension for polarizations
+            E_inc_expanded = E_inc_reshaped[..., np.newaxis]
+            e_total = e_scat + E_inc_expanded
+        else:
+            # Try to broadcast
+            try:
+                e_total = e_scat + E_inc_reshaped
+            except ValueError:
+                # Reshape E_inc to match e_scat
+                E_inc_flat = E_inc.reshape(-1, E_inc.shape[-1]) if E_inc.ndim > 2 else E_inc
+                e_scat_flat = e_scat.reshape(-1, 3) if e_scat.ndim > 1 else e_scat
+                if E_inc_flat.shape[0] == e_scat_flat.shape[0]:
+                    e_total = (e_scat_flat + E_inc_flat[:, :3]).reshape(e_scat.shape)
+                else:
+                    raise ValueError(
+                        f"Cannot combine scattered field (shape {e_scat.shape}) "
+                        f"with incident field (shape {E_inc.shape}). "
+                        "Ensure both are computed at the same grid points."
+                    )
+
+        # Handle magnetic field
+        h_total = None
+        if h_scat is not None and H_inc is not None:
+            if H_inc.ndim == 3 and H_inc.shape[1] > 1:
+                n_pol = H_inc.shape[1]
+                H_inc_reshaped = H_inc.reshape(self.original_shape + (n_pol, 3))
+                H_inc_reshaped = np.moveaxis(H_inc_reshaped, -2, -1)
+            elif H_inc.ndim == 3 and H_inc.shape[1] == 1:
+                H_inc_reshaped = H_inc[:, 0, :].reshape(self.original_shape + (3,))
+            else:
+                H_inc_reshaped = H_inc.reshape(self.original_shape + (3,))
+
+            try:
+                h_total = h_scat + H_inc_reshaped
+            except ValueError:
+                h_total = h_scat  # Fall back to just scattered field
+
+        return e_total, h_total
+
     def __repr__(self) -> str:
         return f"GridField(shape={self.original_shape}, n_points={self.n_points})"
+
+
+class GridFieldPoints:
+    """
+    Point object for GridField grid positions.
+
+    This class provides a MATLAB-compatible interface for accessing
+    grid positions, similar to meshfield.pt in MATLAB MNPBEM.
+
+    Parameters
+    ----------
+    pos : ndarray
+        Flattened position array (n_points, 3).
+    original_shape : tuple
+        Original grid shape for reshaping results.
+
+    Attributes
+    ----------
+    pos : ndarray
+        Position array.
+    n : int
+        Number of points.
+
+    Examples
+    --------
+    >>> mf = GridField(p, xx, yy, zz)
+    >>> E_inc, H_inc = exc.fields(mf.pt.pos, wavelength)
+    """
+
+    def __init__(self, pos: np.ndarray, original_shape: tuple):
+        """Initialize grid field points."""
+        self._pos = pos
+        self.original_shape = original_shape
+
+    @property
+    def pos(self) -> np.ndarray:
+        """Position array (n_points, 3)."""
+        return self._pos
+
+    @property
+    def n(self) -> int:
+        """Number of points."""
+        return len(self._pos)
+
+    def __len__(self) -> int:
+        """Number of points."""
+        return len(self._pos)
+
+    def __call__(self, field: np.ndarray) -> np.ndarray:
+        """
+        Reshape field array to original grid shape.
+
+        This mimics MATLAB's meshfield.pt(field) behavior.
+
+        Parameters
+        ----------
+        field : ndarray
+            Field values at grid points, shape (n_points, ...).
+
+        Returns
+        -------
+        ndarray
+            Reshaped field with original grid shape.
+        """
+        if field.shape[0] != len(self._pos):
+            raise ValueError(
+                f"Field size ({field.shape[0]}) doesn't match "
+                f"number of grid points ({len(self._pos)})"
+            )
+
+        # Reshape to original grid shape
+        extra_dims = field.shape[1:] if field.ndim > 1 else ()
+        new_shape = self.original_shape + extra_dims
+        return field.reshape(new_shape)
+
+    def __repr__(self) -> str:
+        return f"GridFieldPoints(n={self.n}, shape={self.original_shape})"
 
 
 class MeshField:
