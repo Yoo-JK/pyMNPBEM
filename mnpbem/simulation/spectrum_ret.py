@@ -260,9 +260,11 @@ class SpectrumRet:
 
     def scattering(self, sig: CompStruct) -> Tuple[np.ndarray, dict]:
         """
-        Compute scattering cross section from far-field.
+        Compute scattering cross section (radiated power) from far-field.
 
-        C_sca = integral of |E_ff|^2 dΩ / (incoming intensity)
+        Following MATLAB retarded/scattering.m:
+        dsca = 0.5 * Re(nvec · (E × H*))  (Poynting vector)
+        sca = integral(dsca * area)
 
         Parameters
         ----------
@@ -272,7 +274,7 @@ class SpectrumRet:
         Returns
         -------
         sca : ndarray
-            Scattering cross section for each polarization.
+            Scattering cross section (radiated power) for each polarization.
         dsca : dict
             Differential scattering cross section {'dsca': array}.
         """
@@ -280,17 +282,36 @@ class SpectrumRet:
         field, k = self.farfield(sig)
 
         E_ff = field.e  # (n_dir, 3, n_pol)
-        area = self.pinfty.area
+        H_ff = field.h  # (n_dir, 3, n_pol)
+        nvec = self.pinfty.nvec  # (n_dir, 3) - outward normals
+        area = self.pinfty.area  # (n_dir,)
 
         if E_ff.ndim == 2:
             E_ff = E_ff[:, :, np.newaxis]
+        if H_ff.ndim == 2:
+            H_ff = H_ff[:, :, np.newaxis]
 
         n_pol = E_ff.shape[2]
+        n_dir = E_ff.shape[0]
 
-        # Differential scattering cross section: dσ/dΩ = |E_ff|^2
-        dsca = np.sum(np.abs(E_ff)**2, axis=1)  # (n_dir, n_pol)
+        # Poynting vector: S = 0.5 * Re(E × H*)
+        # dsca = nvec · S = 0.5 * Re(nvec · (E × H*))
+        dsca = np.zeros((n_dir, n_pol))
 
-        # Total scattering: integrate over sphere
+        for i_pol in range(n_pol):
+            E = E_ff[:, :, i_pol]  # (n_dir, 3)
+            H = H_ff[:, :, i_pol]  # (n_dir, 3)
+
+            # E × H* (cross product for each direction)
+            cross_EH = np.cross(E, np.conj(H))  # (n_dir, 3)
+
+            # nvec · (E × H*)
+            nvec_dot_cross = np.sum(nvec * cross_EH, axis=1)  # (n_dir,)
+
+            # dsca = 0.5 * Re(...)
+            dsca[:, i_pol] = 0.5 * np.real(nvec_dot_cross)
+
+        # Total radiated power: integrate over sphere
         sca = np.zeros(n_pol)
         for i_pol in range(n_pol):
             sca[i_pol] = np.sum(dsca[:, i_pol] * area)

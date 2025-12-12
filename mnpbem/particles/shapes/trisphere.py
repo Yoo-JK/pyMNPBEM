@@ -213,6 +213,9 @@ def trisphere(
     else:
         p_final = Particle(verts, faces, interp=interp, **kwargs)
 
+    # Ensure normals point outward (convex hull may give inconsistent orientation)
+    p_final = p_final.orient_normals(outward=True)
+
     return p_final
 
 

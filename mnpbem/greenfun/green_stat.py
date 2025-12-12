@@ -104,7 +104,10 @@ class GreenStat:
         """
         Compute Green function matrix.
 
-        G[i, j] = 1 / (4*pi*|r_j - r_i|) * area[j]
+        Following MATLAB greenstat/eval1.m:
+        G[i, j] = 1 / |r_j - r_i| * area[j]
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor.
 
         Returns
         -------
@@ -119,8 +122,8 @@ class GreenStat:
         # Avoid division by zero on diagonal
         d = np.where(d == 0, np.inf, d)
 
-        # Green function: 1 / (4*pi*r)
-        G = 1.0 / (4 * np.pi * d)
+        # Green function: 1 / r  (MATLAB convention, no 4*pi)
+        G = 1.0 / d
 
         # Multiply by face areas for integration
         G = G * self.p2.area[np.newaxis, :]
@@ -132,8 +135,11 @@ class GreenStat:
         """
         Compute surface derivative of Green function.
 
-        F[i, j] = n_j . grad_j G(r_i, r_j) * area[j]
-                = n_j . (r_j - r_i) / (4*pi*|r_j - r_i|^3) * area[j]
+        Following MATLAB greenstat/eval1.m:
+        F[i, j] = -n . (r1 - r2) / |r_j - r_i|^3 * area[j]
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor.
+        Also note the sign: MATLAB uses -(n.(x,y,z)) where (x,y,z) = pos1 - pos2
 
         Returns
         -------
@@ -149,14 +155,14 @@ class GreenStat:
         d = np.where(d == 0, np.inf, d)
         d3 = d ** 3
 
-        # Normal vectors at target faces
-        nvec = self.p2.nvec  # (n2, 3)
+        # Normal vectors at p1 (source) - MATLAB uses p1.nvec
+        nvec = self.p1.nvec if hasattr(self.p1, 'nvec') else self.p2.nvec
 
-        # n . (r2 - r1) / (4*pi*r^3)
-        # dr[i, j, k] * nvec[j, k] summed over k
-        n_dot_dr = np.sum(dr * nvec[np.newaxis, :, :], axis=2)
-
-        F = n_dot_dr / (4 * np.pi * d3)
+        # MATLAB: F = -(in(x,1) + in(y,2) + in(z,3)) ./ d.^3 * area
+        # where x = pos1 - pos2 = -dr
+        # n . (-dr) / r^3 = -n . dr / r^3
+        n_dot_dr = np.sum(nvec[:, np.newaxis, :] * dr, axis=2)
+        F = -n_dot_dr / d3
 
         # Multiply by face areas
         F = F * self.p2.area[np.newaxis, :]
@@ -190,8 +196,10 @@ class GreenStat:
         """
         Compute gradient of Green function.
 
-        Gp[i, j, :] = grad_j G(r_i, r_j) * area[j]
-                    = (r_j - r_i) / (4*pi*|r_j - r_i|^3) * area[j]
+        Following MATLAB greenstat/eval1.m:
+        Gp[i, j, :] = -(r1 - r2) / |r_j - r_i|^3 * area[j]
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor.
 
         Returns
         -------
@@ -207,8 +215,10 @@ class GreenStat:
         d = np.where(d == 0, np.inf, d)
         d3 = d ** 3
 
-        # Gradient: (r2 - r1) / (4*pi*r^3)
-        Gp = dr / (4 * np.pi * d3[:, :, np.newaxis])
+        # MATLAB: Gp = -[x./d.^3, y./d.^3, z./d.^3] * area
+        # where x = pos1 - pos2 = -dr
+        # So Gp = -(-dr) / d^3 = dr / d^3
+        Gp = -(-dr) / d3[:, :, np.newaxis]
 
         # Multiply by face areas
         Gp = Gp * self.p2.area[np.newaxis, :, np.newaxis]

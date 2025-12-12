@@ -138,7 +138,12 @@ class GreenRet:
         """
         Compute retarded Green function matrix (scalar potential).
 
-        G[i, j] = exp(i*k*r) / (4*pi*r) * area[j]
+        Following MATLAB greenret/eval1.m:
+        G[i, j] = exp(i*k*r) / r * area[j]
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor in the Green function.
+        This is because the boundary element method integrates the factor into
+        the boundary conditions.
 
         Parameters
         ----------
@@ -165,8 +170,8 @@ class GreenRet:
         # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
         d_safe = np.where(self_mask, 1.0, d)
 
-        # Retarded Green function: exp(i*k*r) / (4*pi*r)
-        G = np.exp(1j * k * d_safe) / (4 * np.pi * d_safe)
+        # Retarded Green function: exp(i*k*r) / r  (MATLAB convention, no 4*pi)
+        G = np.exp(1j * k * d_safe) / d_safe
 
         # Set self-terms to zero (they would be singular anyway)
         G[self_mask] = 0
@@ -181,10 +186,12 @@ class GreenRet:
         """
         Compute surface derivative of retarded Green function.
 
-        F[i, j] = n_j . grad_j G(r_i, r_j) * area[j]
+        Following MATLAB greenret/eval1.m:
+        F[i, j] = (n_j . r_ij) * (i*k - 1/r) / r^2 * area[j] * exp(i*k*r)
 
-        For retarded Green function:
-        grad G = (i*k - 1/r) * exp(i*k*r) / (4*pi*r) * (r_j - r_i) / r
+        where r_ij = pos2[j] - pos1[i], r = |r_ij|
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor.
 
         Parameters
         ----------
@@ -208,24 +215,22 @@ class GreenRet:
         # Identify self-terms (zero distance)
         self_mask = (d == 0)
 
-        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        # Use placeholder value for self-terms to avoid NaN
         d_safe = np.where(self_mask, 1.0, d)
 
-        # grad G = (i*k - 1/r) * G * r_hat
-        # where r_hat = (r_j - r_i) / r
+        # Normal vectors at source (p1) - MATLAB uses p1.nvec
+        nvec = self.p1.nvec if hasattr(self.p1, 'nvec') else self.p2.nvec
+
+        # n . dr (inner product of normal with distance vector)
+        # dr = pos2 - pos1, so n . dr is negative of what we might expect
+        n_dot_dr = np.sum(nvec[:, np.newaxis, :] * dr, axis=2)
+
+        # F = (n . r) * (i*k - 1/r) / r^2 * area * exp(ikr)
+        # (MATLAB formula from eval1.m)
         exp_ikr = np.exp(1j * k * d_safe)
-        factor = (1j * k - 1.0 / d_safe) * exp_ikr / (4 * np.pi * d_safe)
+        F = n_dot_dr * (1j * k - 1.0 / d_safe) / (d_safe ** 2) * exp_ikr
 
-        # Normal vectors at target faces
-        nvec = self.p2.nvec  # (n2, 3)
-
-        # n . dr / r
-        n_dot_dr = np.sum(dr * nvec[np.newaxis, :, :], axis=2)
-        n_dot_rhat = n_dot_dr / d_safe
-
-        F = factor * n_dot_rhat
-
-        # Set self-terms to zero (they would be singular anyway)
+        # Set self-terms to zero (singular)
         F[self_mask] = 0
 
         # Multiply by face areas
@@ -270,7 +275,10 @@ class GreenRet:
         """
         Compute gradient of retarded Green function.
 
-        Gp[i, j, :] = grad_j G(r_i, r_j) * area[j]
+        Following MATLAB greenret/eval1.m:
+        Gp[i, j, :] = (i*k - 1/r) / r^2 * dr * area[j] * exp(i*k*r)
+
+        Note: MATLAB MNPBEM does NOT use the 1/(4*pi) factor.
 
         Parameters
         ----------
@@ -294,12 +302,12 @@ class GreenRet:
         # Identify self-terms (zero distance)
         self_mask = (d == 0)
 
-        # Use placeholder value for self-terms to avoid NaN from exp(1j*k*inf)
+        # Use placeholder value for self-terms to avoid NaN
         d_safe = np.where(self_mask, 1.0, d)
 
-        # grad G = (i*k - 1/r) * exp(i*k*r) / (4*pi*r) * r_hat
+        # grad G = (i*k - 1/r) * exp(i*k*r) / r^2 * dr  (no 4*pi)
         exp_ikr = np.exp(1j * k * d_safe)
-        factor = (1j * k - 1.0 / d_safe) * exp_ikr / (4 * np.pi * d_safe ** 2)
+        factor = (1j * k - 1.0 / d_safe) * exp_ikr / (d_safe ** 2)
 
         # Gp[i, j, :] = factor[i,j] * dr[i,j,:]
         Gp = factor[:, :, np.newaxis] * dr

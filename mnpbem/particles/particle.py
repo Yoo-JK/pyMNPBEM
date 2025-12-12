@@ -122,12 +122,29 @@ class Particle:
             indices = face[valid].astype(int)
             vertices = self.verts[indices]
 
-            # Centroid
-            self.pos[i] = vertices.mean(axis=0)
+            # Check if face uses curved format [v0, m01, v1, m12, v2, m20, ...]
+            # where even indices are corners and odd indices are midpoints
+            # A curved triangle has 6 vertices, curved quad has 8
+            is_curved = len(indices) >= 6
+
+            if is_curved:
+                # Extract corner vertices (even indices)
+                corner_indices = indices[::2]
+                corner_verts = self.verts[corner_indices]
+                # Centroid of corners only
+                self.pos[i] = corner_verts.mean(axis=0)
+            else:
+                # Flat face - use all vertices for centroid
+                self.pos[i] = vertices.mean(axis=0)
 
             if len(indices) >= 3:
-                # Compute two edge vectors
-                v0, v1, v2 = vertices[0], vertices[1], vertices[2]
+                if is_curved:
+                    # Use corner vertices for normal computation
+                    v0, v1, v2 = corner_verts[0], corner_verts[1], corner_verts[2]
+                else:
+                    # Use first 3 vertices
+                    v0, v1, v2 = vertices[0], vertices[1], vertices[2]
+
                 e1 = v1 - v0
                 e2 = v2 - v0
 
@@ -143,7 +160,18 @@ class Particle:
                     self.tvec2[i] = np.cross(self.nvec[i], self.tvec1[i])
 
                 # Area computation
-                if len(indices) == 3:
+                if is_curved:
+                    # For curved triangles, compute area using corners
+                    n_corners = len(corner_indices)
+                    if n_corners == 3:
+                        self.area[i] = 0.5 * norm_mag
+                    elif n_corners >= 4:
+                        v3 = corner_verts[3]
+                        e3 = v3 - v0
+                        area1 = 0.5 * np.linalg.norm(np.cross(e1, e2))
+                        area2 = 0.5 * np.linalg.norm(np.cross(e2, e3))
+                        self.area[i] = area1 + area2
+                elif len(indices) == 3:
                     # Triangle area = 0.5 * |e1 x e2|
                     self.area[i] = 0.5 * norm_mag
                 else:
@@ -286,9 +314,91 @@ class Particle:
             Particle with flipped faces.
         """
         new_faces = self.faces.copy()
-        # Reverse vertex order for first 3 vertices
-        new_faces[:, :3] = new_faces[:, [0, 2, 1]]
+
+        for i in range(len(new_faces)):
+            valid = ~np.isnan(new_faces[i])
+            n_valid = np.sum(valid)
+
+            if n_valid >= 6:
+                # Curved face format: [v0, m01, v1, m12, v2, m20, ...]
+                # To flip: reverse the corner sequence while adjusting midpoints
+                indices = new_faces[i][valid].copy()
+                n_corners = n_valid // 2
+
+                # Extract corners and midpoints
+                corners = indices[::2]  # v0, v1, v2, ...
+                midpoints = indices[1::2]  # m01, m12, m20, ...
+
+                # Reverse corners (keep v0 first, reverse the rest)
+                # v0, v1, v2 -> v0, v2, v1
+                new_corners = np.concatenate([[corners[0]], corners[1:][::-1]])
+
+                # Reverse midpoints: m01, m12, m20 -> m20, m12, m01 -> shift to m02, m21, m10
+                # Actually for v0->v2->v1->v0: midpoints are m02, m21, m10 = m20, m12, m01 reversed
+                new_midpoints = midpoints[::-1]
+
+                # Interleave: [v0, m02, v2, m21, v1, m10]
+                new_indices = np.zeros_like(indices)
+                new_indices[::2] = new_corners
+                new_indices[1::2] = new_midpoints
+
+                new_faces[i][valid] = new_indices
+            elif n_valid >= 3:
+                # Flat face: swap positions 1 and 2 (v0, v1, v2 -> v0, v2, v1)
+                indices = new_faces[i][valid].copy()
+                if n_valid == 3:
+                    indices[1], indices[2] = indices[2], indices[1]
+                elif n_valid == 4:
+                    # Quad: reverse order but keep v0 first: v0,v1,v2,v3 -> v0,v3,v2,v1
+                    indices[1:] = indices[1:][::-1]
+                new_faces[i][valid] = indices
+
         return Particle(self.verts.copy(), new_faces, self.interp)
+
+    def orient_normals(self, outward: bool = True) -> 'Particle':
+        """
+        Orient normals consistently outward or inward for closed surfaces.
+
+        Checks each face's normal against the direction from origin to face
+        centroid and flips if needed.
+
+        Parameters
+        ----------
+        outward : bool
+            If True, orient normals outward. If False, orient inward.
+
+        Returns
+        -------
+        Particle
+            Particle with consistently oriented normals.
+        """
+        # Create a copy of the particle
+        p = Particle(self.verts.copy(), self.faces.copy(), self.interp,
+                     compute_normals=False)
+        p.pos = self.pos.copy()
+        p.nvec = self.nvec.copy()
+        p.tvec1 = self.tvec1.copy()
+        p.tvec2 = self.tvec2.copy()
+        p.area = self.area.copy()
+
+        # For each face, check if normal points in desired direction
+        # relative to centroid direction
+        for i in range(len(p.faces)):
+            pos_dir = p.pos[i]
+            pos_norm = np.linalg.norm(pos_dir)
+            if pos_norm > 1e-12:
+                pos_dir = pos_dir / pos_norm
+
+            # Check if normal is aligned with position direction
+            dot = np.dot(p.nvec[i], pos_dir)
+
+            # If outward and dot < 0, or inward and dot > 0, flip normal
+            if (outward and dot < 0) or (not outward and dot > 0):
+                p.nvec[i] = -p.nvec[i]
+                # Also flip tangent to maintain right-hand rule
+                p.tvec2[i] = -p.tvec2[i]
+
+        return p
 
     def clean(self, tol: float = 1e-10) -> 'Particle':
         """
