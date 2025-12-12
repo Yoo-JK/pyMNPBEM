@@ -64,6 +64,7 @@ def sphtriangulate(verts: np.ndarray) -> np.ndarray:
 
     This matches MATLAB's sphtriangulate function which uses
     Delaunay triangulation on sphere surface via convex hull.
+    Ensures all face normals point outward (away from origin).
 
     Parameters
     ----------
@@ -74,9 +75,31 @@ def sphtriangulate(verts: np.ndarray) -> np.ndarray:
     -------
     faces : ndarray
         Triangle face indices, shape (n_faces, 3).
+        Vertex ordering ensures outward-pointing normals.
     """
     hull = ConvexHull(verts)
-    return hull.simplices
+    faces = hull.simplices.copy()
+
+    # Ensure consistent outward-pointing normals
+    # For each face, check if normal points away from origin
+    for i, face in enumerate(faces):
+        v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
+
+        # Compute face normal using cross product
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal = np.cross(edge1, edge2)
+
+        # Face centroid
+        centroid = (v0 + v1 + v2) / 3
+
+        # Check if normal points outward (same direction as centroid from origin)
+        # For sphere centered at origin, centroid points outward
+        if np.dot(normal, centroid) < 0:
+            # Flip winding order to reverse normal direction
+            faces[i] = [face[0], face[2], face[1]]
+
+    return faces
 
 
 def trisphere(

@@ -86,15 +86,47 @@ class Particle:
             return
 
         self.verts = np.asarray(verts, dtype=float)
-        faces = np.asarray(faces)
+        faces = np.asarray(faces, dtype=float)
 
-        # Ensure faces has 4 columns (pad with NaN for triangles)
         if faces.ndim == 1:
             faces = faces.reshape(1, -1)
-        if faces.shape[1] == 3:
-            self.faces = np.column_stack([faces, np.full(len(faces), np.nan)])
+
+        # Handle faces2 format (curved interpolation with midpoints)
+        # MATLAB: faces with >4 columns contain midpoint indices
+        # Format: [v0, mid01, v1, mid12, v2, mid20, nan, nan] for triangles
+        #         [v0, mid01, v1, mid12, v2, mid23, v3, mid30] for quads
+        if faces.shape[1] > 4:
+            # Store full faces2 for curved interpolation
+            self.verts2 = self.verts.copy()
+            self.faces2 = faces.copy()
+
+            # Extract original vertex indices (every other index: 0, 2, 4, ...)
+            # Triangle: indices 0, 2, 4 → 3 vertices
+            # Quad: indices 0, 2, 4, 6 → 4 vertices
+            n_faces = len(faces)
+            extracted_faces = np.full((n_faces, 4), np.nan)
+
+            for i, face in enumerate(faces):
+                # Get non-NaN values
+                valid_mask = ~np.isnan(face)
+                valid_vals = face[valid_mask]
+                n_valid = len(valid_vals)
+
+                # Extract original vertices (even indices: 0, 2, 4, 6)
+                if n_valid >= 6:  # Triangle with midpoints
+                    extracted_faces[i, 0] = valid_vals[0]  # v0
+                    extracted_faces[i, 1] = valid_vals[2]  # v1
+                    extracted_faces[i, 2] = valid_vals[4]  # v2
+                    if n_valid >= 8:  # Quad with midpoints
+                        extracted_faces[i, 3] = valid_vals[6]  # v3
+
+            self.faces = extracted_faces
         else:
-            self.faces = faces.astype(float)
+            # Standard faces format (3 or 4 columns)
+            if faces.shape[1] == 3:
+                self.faces = np.column_stack([faces, np.full(len(faces), np.nan)])
+            else:
+                self.faces = faces
 
         # Compute auxiliary information
         if compute_normals:
