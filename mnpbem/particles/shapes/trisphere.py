@@ -1,17 +1,69 @@
 """
 Triangulated sphere generation.
+
+Uses pre-computed energy-minimized point distributions from MATLAB MNPBEM,
+originally from http://www.maths.unsw.edu.au/school/articles/me100.html
 """
 
 import numpy as np
+from pathlib import Path
 from typing import Optional
 from scipy.spatial import ConvexHull
 
 from ..particle import Particle
 
 
+# Path to pre-computed sphere data
+_DATA_FILE = Path(__file__).parent / 'trisphere_data.npz'
+
+# Available sphere point counts (matching MATLAB MNPBEM)
+SPHERE_POINTS = [32, 60, 144, 169, 225, 256, 289, 324, 361, 400, 441, 484,
+                 529, 576, 625, 676, 729, 784, 841, 900, 961, 1024, 1225, 1444]
+
+# Cache for loaded sphere data
+_sphere_cache = {}
+
+
+def _load_sphere_data(n: int) -> np.ndarray:
+    """
+    Load pre-computed sphere vertices from data file.
+
+    Parameters
+    ----------
+    n : int
+        Number of points (must be in SPHERE_POINTS).
+
+    Returns
+    -------
+    verts : ndarray
+        Vertices on unit sphere, shape (n, 3).
+    """
+    global _sphere_cache
+
+    key = f'sphere{n}'
+
+    if key not in _sphere_cache:
+        if not _DATA_FILE.exists():
+            raise FileNotFoundError(
+                f"Sphere data file not found: {_DATA_FILE}\n"
+                "Run the data extraction script to generate this file."
+            )
+
+        data = np.load(_DATA_FILE)
+        if key not in data:
+            raise ValueError(f"Sphere data for n={n} not found in data file")
+
+        _sphere_cache[key] = data[key]
+
+    return _sphere_cache[key].copy()
+
+
 def sphtriangulate(verts: np.ndarray) -> np.ndarray:
     """
     Triangulate points on a sphere surface using convex hull.
+
+    This matches MATLAB's sphtriangulate function which uses
+    Delaunay triangulation on sphere surface via convex hull.
 
     Parameters
     ----------
@@ -23,112 +75,8 @@ def sphtriangulate(verts: np.ndarray) -> np.ndarray:
     faces : ndarray
         Triangle face indices, shape (n_faces, 3).
     """
-    # Use convex hull for triangulation
     hull = ConvexHull(verts)
     return hull.simplices
-
-
-def _generate_fibonacci_sphere(n: int) -> np.ndarray:
-    """
-    Generate approximately uniform points on a sphere using Fibonacci spiral.
-
-    Parameters
-    ----------
-    n : int
-        Number of points.
-
-    Returns
-    -------
-    points : ndarray
-        Points on unit sphere, shape (n, 3).
-    """
-    indices = np.arange(n, dtype=float)
-    phi = np.pi * (3.0 - np.sqrt(5.0))  # Golden angle
-
-    y = 1 - (indices / (n - 1)) * 2  # y goes from 1 to -1
-    radius = np.sqrt(1 - y * y)
-
-    theta = phi * indices
-
-    x = np.cos(theta) * radius
-    z = np.sin(theta) * radius
-
-    return np.column_stack([x, y, z])
-
-
-def _generate_icosphere(subdivisions: int = 3) -> np.ndarray:
-    """
-    Generate icosphere vertices.
-
-    Parameters
-    ----------
-    subdivisions : int
-        Number of subdivisions of icosahedron.
-
-    Returns
-    -------
-    verts : ndarray
-        Vertices on unit sphere.
-    """
-    # Start with icosahedron
-    t = (1.0 + np.sqrt(5.0)) / 2.0
-
-    vertices = np.array([
-        [-1,  t,  0], [ 1,  t,  0], [-1, -t,  0], [ 1, -t,  0],
-        [ 0, -1,  t], [ 0,  1,  t], [ 0, -1, -t], [ 0,  1, -t],
-        [ t,  0, -1], [ t,  0,  1], [-t,  0, -1], [-t,  0,  1]
-    ], dtype=float)
-
-    # Normalize to unit sphere
-    vertices = vertices / np.linalg.norm(vertices, axis=1, keepdims=True)
-
-    faces = np.array([
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
-    ])
-
-    # Subdivide
-    for _ in range(subdivisions):
-        new_faces = []
-        edge_cache = {}
-
-        for face in faces:
-            v = [vertices[face[i]] for i in range(3)]
-
-            # Get midpoints
-            mid = []
-            for i in range(3):
-                edge = tuple(sorted([face[i], face[(i + 1) % 3]]))
-                if edge in edge_cache:
-                    mid.append(edge_cache[edge])
-                else:
-                    midpoint = (v[i] + v[(i + 1) % 3]) / 2
-                    midpoint = midpoint / np.linalg.norm(midpoint)
-                    mid_idx = len(vertices)
-                    vertices = np.vstack([vertices, midpoint])
-                    edge_cache[edge] = mid_idx
-                    mid.append(mid_idx)
-
-            # Create 4 new faces
-            new_faces.append([face[0], mid[0], mid[2]])
-            new_faces.append([face[1], mid[1], mid[0]])
-            new_faces.append([face[2], mid[2], mid[1]])
-            new_faces.append([mid[0], mid[1], mid[2]])
-
-        faces = np.array(new_faces)
-
-    return vertices
-
-
-# Map of available sphere point counts
-SPHERE_POINTS = {
-    32: 2, 60: 2, 144: 3, 169: 3, 225: 3, 256: 3, 289: 3, 324: 3,
-    361: 3, 400: 4, 441: 4, 484: 4, 529: 4, 576: 4, 625: 4,
-    676: 4, 729: 4, 784: 4, 841: 4, 900: 4, 961: 5, 1024: 5,
-    1225: 5, 1444: 5
-}
 
 
 def trisphere(
@@ -138,12 +86,15 @@ def trisphere(
     **kwargs
 ) -> Particle:
     """
-    Create triangulated sphere.
+    Create triangulated sphere using pre-computed energy-minimized points.
+
+    Loads pre-computed point distributions that minimize potential energy
+    on the sphere surface, matching MATLAB MNPBEM's trisphere function.
 
     Parameters
     ----------
     n : int
-        Approximate number of vertices. Available: 32, 60, 144, 169, 225, 256,
+        Number of vertices. Available: 32, 60, 144, 169, 225, 256,
         289, 324, 361, 400, 441, 484, 529, 576, 625, 676, 729, 784, 841, 900,
         961, 1024, 1225, 1444. Other values will use closest available.
     diameter : float
@@ -163,51 +114,45 @@ def trisphere(
     >>> sphere = trisphere(144, 10)  # 144 vertices, 10 nm diameter
     >>> sphere.n_verts
     144
+
+    Notes
+    -----
+    The point distributions are from MATLAB MNPBEM, which uses
+    energy-minimized configurations from:
+    http://www.maths.unsw.edu.au/school/articles/me100.html
     """
     # Find closest available n
-    available = list(SPHERE_POINTS.keys())
-    idx = np.argmin(np.abs(np.array(available) - n))
+    available = np.array(SPHERE_POINTS)
+    idx = np.argmin(np.abs(available - n))
     n_actual = available[idx]
 
     if n != n_actual:
-        print(f"trisphere: using {n_actual} vertices (closest to {n})")
+        print(f"trisphere: loading sphere{n_actual} from trisphere_data.npz")
 
-    # Determine subdivision level
-    if n_actual <= 60:
-        subdivisions = 2
-    elif n_actual <= 400:
-        subdivisions = 3
-    elif n_actual <= 960:
-        subdivisions = 4
-    else:
-        subdivisions = 5
+    # Load pre-computed vertices from MATLAB data
+    verts = _load_sphere_data(n_actual)
 
-    # Generate icosphere or fibonacci sphere
-    if n_actual in [32, 60]:
-        verts = _generate_icosphere(subdivisions)
-    else:
-        # Use Fibonacci sphere for more control over point count
-        verts = _generate_fibonacci_sphere(n_actual)
-
-    # Triangulate
+    # Triangulate using convex hull (same as MATLAB sphtriangulate)
     faces = sphtriangulate(verts)
 
-    # Scale to desired diameter
+    # Scale to desired diameter (verts are on unit sphere)
     verts = verts * (diameter / 2)
 
-    # Create basic particle
+    # Create particle with norm='off' equivalent
     p = Particle(verts, faces, interp='flat', compute_normals=False)
 
-    # Add midpoints for curved interpolation
+    # Add midpoints for curved interpolation (matching MATLAB: midpoints(p, 'flat'))
     p = p.midpoints('flat')
 
     # Rescale midpoint vertices to sphere surface
+    # MATLAB: verts2 = 0.5 * diameter * bsxfun(@rdivide, p.verts2, sqrt(dot(p.verts2, p.verts2, 2)))
     if p.verts2 is not None:
-        norms = np.linalg.norm(p.verts2, axis=1, keepdims=True)
+        norms = np.sqrt(np.sum(p.verts2 * p.verts2, axis=1, keepdims=True))
         norms = np.where(norms > 0, norms, 1)
-        p.verts2 = p.verts2 / norms * (diameter / 2)
+        p.verts2 = (diameter / 2) * p.verts2 / norms
 
     # Create final particle with curved boundary data
+    # MATLAB: p = particle(verts2, p.faces2, varargin{:})
     if p.verts2 is not None:
         p_final = Particle(p.verts2, p.faces2, interp=interp, **kwargs)
     else:
@@ -224,11 +169,7 @@ def trispherescale(
     **kwargs
 ) -> Particle:
     """
-    Create triangulated sphere with non-uniform scaling.
-
-    Creates a sphere and scales it along the x, y, z axes.
-    This is similar to triellipsoid but maintains better mesh
-    quality for small deformations.
+    Create triangulated sphere with non-uniform scaling (spheroid/ellipsoid).
 
     Parameters
     ----------
@@ -255,31 +196,37 @@ def trispherescale(
     >>> # Create prolate spheroid (elongated along z)
     >>> p = trispherescale(144, 10, scale=(1, 1, 2.0))
     """
-    # Create base sphere
-    sphere = trisphere(n, diameter, interp='flat', **kwargs)
+    # Find closest available n
+    available = np.array(SPHERE_POINTS)
+    idx = np.argmin(np.abs(available - n))
+    n_actual = available[idx]
 
-    # Get vertices and apply scaling
-    verts = sphere.verts.copy()
+    if n != n_actual:
+        print(f"trispherescale: loading sphere{n_actual} from trisphere_data.npz")
+
+    # Load pre-computed vertices
+    verts = _load_sphere_data(n_actual)
+
+    # Triangulate
+    faces = sphtriangulate(verts)
+
+    # Scale to diameter and apply non-uniform scaling
     scale = np.asarray(scale)
-    verts = verts * scale
+    verts = verts * (diameter / 2) * scale
 
-    # Get faces
-    faces = sphere.faces.copy()
-
-    # Create scaled particle
+    # Create particle
     p = Particle(verts, faces, interp='flat', compute_normals=False)
 
-    # Add midpoints for curved interpolation
+    # Add midpoints
     p = p.midpoints('flat')
 
-    # Rescale midpoint vertices to scaled sphere surface
+    # Rescale midpoint vertices to scaled ellipsoid surface
     if p.verts2 is not None:
-        # For each midpoint, project to the scaled ellipsoid surface
+        # Normalize by scale to get unit sphere position, then project and rescale
         verts2_normalized = p.verts2 / scale
-        norms = np.linalg.norm(verts2_normalized, axis=1, keepdims=True)
+        norms = np.sqrt(np.sum(verts2_normalized * verts2_normalized, axis=1, keepdims=True))
         norms = np.where(norms > 0, norms, 1)
-        # Project to ellipsoid
-        p.verts2 = verts2_normalized / norms * (diameter / 2) * scale
+        p.verts2 = (diameter / 2) * verts2_normalized / norms * scale
 
     # Create final particle
     if p.verts2 is not None:
