@@ -144,7 +144,9 @@ class ComParticle(Compound):
         """
         Compute Lambda factor for BEM equations.
 
-        Lambda = (eps1 + eps2) / (eps1 - eps2) / (2 * pi)
+        Lambda = 2 * pi * (eps1 + eps2) / (eps1 - eps2)
+
+        Following Garcia de Abajo, PRB 65, 115418 (2002), Eq. (23).
 
         Parameters
         ----------
@@ -164,8 +166,9 @@ class ComParticle(Compound):
             eps_in, eps_out = self.dielectric_inout(enei, i)
             n = particle.n_faces
 
-            # Lambda = (eps1 + eps2) / (eps1 - eps2) / (2 * pi)
-            lam = (eps_in + eps_out) / (eps_in - eps_out) / (2 * np.pi)
+            # Lambda = 2 * pi * (eps1 + eps2) / (eps1 - eps2)
+            # Garcia de Abajo, Eq. (23)
+            lam = 2 * np.pi * (eps_in + eps_out) / (eps_in - eps_out)
             Lambda[face_idx:face_idx + n] = lam
 
             face_idx += n
