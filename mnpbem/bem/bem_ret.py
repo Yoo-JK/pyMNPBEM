@@ -141,7 +141,7 @@ class BEMRet(BEMBase):
         """
         Initialize BEM matrices for given wavelength.
 
-        Follows MATLAB bemret/subsref.m
+        Follows MATLAB bemret/initmat.m exactly.
 
         Parameters
         ----------
@@ -154,31 +154,40 @@ class BEMRet(BEMBase):
         n = self.n_faces
 
         # Wavenumber in vacuum
-        k0 = 2 * np.pi / enei
-        self._k = k0
+        k = 2 * np.pi / enei
+        self._k = k
 
         # Normal vectors
-        self._nvec = self.p.nvec
+        nvec = self.p.nvec
+        self._nvec = nvec
 
         # Get dielectric functions for all faces
-        eps1 = np.zeros(n, dtype=complex)  # Inside
-        eps2 = np.zeros(n, dtype=complex)  # Outside
+        eps1_arr = np.zeros(n, dtype=complex)  # Inside
+        eps2_arr = np.zeros(n, dtype=complex)  # Outside
 
         face_idx = 0
         for i, particle in enumerate(self.p.p):
             n_faces_i = particle.n_faces
             e_in, e_out = self.p.dielectric_inout(enei, i)
-            eps1[face_idx:face_idx + n_faces_i] = e_in
-            eps2[face_idx:face_idx + n_faces_i] = e_out
+            eps1_arr[face_idx:face_idx + n_faces_i] = e_in
+            eps2_arr[face_idx:face_idx + n_faces_i] = e_out
             face_idx += n_faces_i
 
-        self._eps1 = eps1
-        self._eps2 = eps2
+        # Check if all dielectric functions are the same (single particle case)
+        # If so, use scalar values for efficiency (MATLAB optimization)
+        if len(np.unique(eps1_arr)) == 1 and len(np.unique(eps2_arr)) == 1:
+            eps1 = eps1_arr[0]  # Scalar
+            eps2 = eps2_arr[0]  # Scalar
+            use_scalar_eps = True
+        else:
+            eps1 = np.diag(eps1_arr)  # Diagonal matrix
+            eps2 = np.diag(eps2_arr)
+            use_scalar_eps = False
+
+        self._eps1 = eps1_arr
+        self._eps2 = eps2_arr
 
         # Get Green function matrices
-        # G: scalar Green function
-        # F: surface derivative (n . grad G)
-        # We need to compute these properly
         k_bg = self._get_wavenumber(enei, 0)
         self.g.set_k(k_bg)
 
@@ -190,49 +199,77 @@ class BEMRet(BEMBase):
         H1 = F + 2 * np.pi * np.eye(n)
         H2 = F - 2 * np.pi * np.eye(n)
 
+        # For single particle: G1 = G2 = G (no connectivity between particles)
+        # MATLAB: G1 = obj.g{1,1}.G - obj.g{2,1}.G, but for single particle g{2,1}=0
+        G1 = G
+        G2 = G
+
         # Inverse Green function matrices
-        # G1i = inv(G) for inside
-        # G2i = inv(G) for outside
-        # Note: In MNPBEM, G1 and G2 are different due to dielectric contrast
-        # For now, use simplified version
         try:
-            G_inv = np.linalg.inv(G)
+            G1i = np.linalg.inv(G1)
         except np.linalg.LinAlgError:
-            G_inv = np.linalg.pinv(G)
+            G1i = np.linalg.pinv(G1)
 
-        self._G1i = G_inv
-        self._G2i = G_inv
+        try:
+            G2i = np.linalg.inv(G2)
+        except np.linalg.LinAlgError:
+            G2i = np.linalg.pinv(G2)
 
-        # L1 = G * eps1 * G1i (Eq. 22)
-        # L2 = G * eps2 * G2i
-        # These are diagonal in epsilon
-        self._L1 = G @ np.diag(eps1) @ self._G1i
-        self._L2 = G @ np.diag(eps2) @ self._G2i
+        self._G1i = G1i
+        self._G2i = G2i
 
-        # Sigma1 = H1 * G1i (Eq. 21)
-        # Sigma2 = H2 * G2i
-        self._Sigma1 = H1 @ self._G1i
-        self._Sigma2 = H2 @ self._G2i
+        # L matrices [Eq. (22)]
+        # For single particle with uniform dielectric: L1 = eps1, L2 = eps2 (scalars)
+        # Otherwise: L1 = G1 * eps1 * G1i, L2 = G2 * eps2 * G2i
+        if use_scalar_eps:
+            # Scalar case (MATLAB optimization for single particle)
+            L1 = eps1  # Scalar
+            L2 = eps2  # Scalar
+        else:
+            L1 = G1 @ eps1 @ G1i
+            L2 = G2 @ eps2 @ G2i
+
+        self._L1 = L1
+        self._L2 = L2
+
+        # Sigma matrices [Eq. (21)]
+        Sigma1 = H1 @ G1i
+        Sigma2 = H2 @ G2i
+
+        self._Sigma1 = Sigma1
+        self._Sigma2 = Sigma2
 
         # Deltai = inv(Sigma1 - Sigma2)
-        Delta = self._Sigma1 - self._Sigma2
+        Delta = Sigma1 - Sigma2
         try:
-            self._Deltai = np.linalg.inv(Delta)
+            Deltai = np.linalg.inv(Delta)
         except np.linalg.LinAlgError:
-            self._Deltai = np.linalg.pinv(Delta)
+            Deltai = np.linalg.pinv(Delta)
 
-        # Sigmai for Eq. 19
-        # From the paper, this involves eps1, eps2 contrasts
-        # Sigmai = inv(Sigma_eff) where Sigma_eff handles the dielectric contrast
-        deps = eps1 - eps2
-        deps_safe = np.where(np.abs(deps) < 1e-10, 1e-10, deps)
-        Lambda = (eps1 + eps2) / deps_safe / (2 * np.pi)
+        self._Deltai = Deltai
 
-        Sigma_eff = np.diag(Lambda) + F
+        # Sigma matrix [MATLAB initmat.m lines 53-56]
+        # Sigma = Sigma1 * L1 - Sigma2 * L2 + k^2 * ((L * Deltai) .* (nvec * nvec')) * L
+        L = L1 - L2 if use_scalar_eps else (L1 - L2)
+
+        if use_scalar_eps:
+            # Scalar L case
+            # (L * Deltai) .* (nvec * nvec') = L * Deltai * (nvec * nvec')  element-wise
+            # But nvec * nvec' is outer product (n, n)
+            nvec_outer = nvec @ nvec.T  # (n, n)
+            term3 = k**2 * L * (Deltai * nvec_outer) * L
+            Sigma = Sigma1 * L1 - Sigma2 * L2 + term3
+        else:
+            # Matrix L case
+            nvec_outer = nvec @ nvec.T
+            term3 = k**2 * ((L @ Deltai) * nvec_outer) @ L
+            Sigma = Sigma1 @ L1 - Sigma2 @ L2 + term3
+
+        # Sigmai = inv(Sigma)
         try:
-            self._Sigmai = -np.linalg.inv(Sigma_eff)
+            self._Sigmai = np.linalg.inv(Sigma)
         except np.linalg.LinAlgError:
-            self._Sigmai = -np.linalg.pinv(Sigma_eff)
+            self._Sigmai = np.linalg.pinv(Sigma)
 
         self._enei = enei
 
@@ -327,6 +364,19 @@ class BEMRet(BEMBase):
 
         return phi, a, alpha, De
 
+    def _matmul(self, A, x):
+        """
+        Generalized matrix multiplication (like MATLAB matmul).
+
+        Handles both scalar and matrix A:
+        - If A is scalar: return A * x
+        - If A is matrix: return A @ x
+        """
+        if np.isscalar(A) or (isinstance(A, np.ndarray) and A.ndim == 0):
+            return A * x
+        else:
+            return A @ x
+
     def solve(self, exc) -> CompStruct:
         """
         Solve BEM equations for given excitation.
@@ -364,6 +414,9 @@ class BEMRet(BEMBase):
         Deltai = self._Deltai
         Sigmai = self._Sigmai
 
+        # L can be scalar or matrix
+        L_diff = L1 - L2
+
         # Initialize output arrays
         sig1 = np.zeros((n, n_pol), dtype=complex)
         sig2 = np.zeros((n, n_pol), dtype=complex)
@@ -378,56 +431,54 @@ class BEMRet(BEMBase):
             De_i = De[:, i_pol]    # (n,)
 
             # Modify alpha and De (MATLAB lines 31-34)
-            # alpha = alpha - Sigma1 @ a + i*k * outer(nvec, L1 @ phi)
-            # De = De - Sigma1 @ (L1 @ phi) + i*k * inner(nvec, L1 @ a)
+            # alpha = alpha - matmul(Sigma1, a) + i*k * outer(nvec, matmul(L1, phi))
+            # De = De - matmul(Sigma1, matmul(L1, phi)) + i*k * inner(nvec, matmul(L1, a))
 
             # Sigma1 @ a: matrix times vector field
-            # For each component of a, multiply by Sigma1
             Sigma1_a = np.zeros((n, 3), dtype=complex)
             for j in range(3):
                 Sigma1_a[:, j] = Sigma1 @ a_i[:, j]
 
-            # L1 @ phi: matrix times scalar
-            L1_phi = L1 @ phi_i  # (n,)
+            # matmul(L1, phi): L1 can be scalar or matrix
+            L1_phi = self._matmul(L1, phi_i)  # (n,)
 
             # outer(nvec, L1_phi) = nvec * L1_phi
             outer_nvec_L1phi = nvec * L1_phi[:, np.newaxis]  # (n, 3)
 
             alpha_mod = alpha_i - Sigma1_a + 1j * k * outer_nvec_L1phi  # (n, 3)
 
-            # L1 @ a: for each vector component
+            # matmul(L1, a): for each vector component
             L1_a = np.zeros((n, 3), dtype=complex)
             for j in range(3):
-                L1_a[:, j] = L1 @ a_i[:, j]
+                L1_a[:, j] = self._matmul(L1, a_i[:, j])
 
             # inner(nvec, L1_a) = sum(nvec * L1_a, axis=1)
             inner_nvec_L1a = np.sum(nvec * L1_a, axis=1)  # (n,)
 
-            # Sigma1 @ L1 @ phi
+            # matmul(Sigma1, matmul(L1, phi))
             Sigma1_L1_phi = Sigma1 @ L1_phi  # (n,)
 
             De_mod = De_i - Sigma1_L1_phi + 1j * k * inner_nvec_L1a  # (n,)
 
-            # Eq. (19): sig2 = Sigmai @ (De + i*k * inner(nvec, (L1-L2) @ Deltai @ alpha))
+            # Eq. (19): sig2 = matmul(Sigmai, De + i*k * inner(nvec, matmul(L1-L2, matmul(Deltai, alpha))))
             # First compute Deltai @ alpha (matrix times vector field)
             Deltai_alpha = np.zeros((n, 3), dtype=complex)
             for j in range(3):
                 Deltai_alpha[:, j] = Deltai @ alpha_mod[:, j]
 
-            # (L1 - L2) @ Deltai_alpha
-            L_diff = L1 - L2
+            # matmul(L1-L2, Deltai_alpha)
             L_diff_Deltai_alpha = np.zeros((n, 3), dtype=complex)
             for j in range(3):
-                L_diff_Deltai_alpha[:, j] = L_diff @ Deltai_alpha[:, j]
+                L_diff_Deltai_alpha[:, j] = self._matmul(L_diff, Deltai_alpha[:, j])
 
             # inner(nvec, L_diff_Deltai_alpha)
             inner_term = np.sum(nvec * L_diff_Deltai_alpha, axis=1)  # (n,)
 
             sig2_i = Sigmai @ (De_mod + 1j * k * inner_term)  # (n,)
 
-            # Eq. (20): h2 = Deltai @ (i*k * outer(nvec, (L1-L2) @ sig2) + alpha)
-            # (L1 - L2) @ sig2
-            L_diff_sig2 = L_diff @ sig2_i  # (n,)
+            # Eq. (20): h2 = matmul(Deltai, i*k * outer(nvec, matmul(L1-L2, sig2)) + alpha)
+            # matmul(L1-L2, sig2)
+            L_diff_sig2 = self._matmul(L_diff, sig2_i)  # (n,)
 
             # outer(nvec, L_diff_sig2) = nvec * L_diff_sig2
             outer_nvec_L_diff_sig2 = nvec * L_diff_sig2[:, np.newaxis]  # (n, 3)
@@ -439,10 +490,10 @@ class BEMRet(BEMBase):
                 h2_i[:, j] = Deltai @ h2_rhs[:, j]
 
             # Surface charges and currents (MATLAB lines 44-45)
-            # sig1 = G1i @ (sig2 + phi)
-            # h1 = G1i @ (h2 + a)
-            # sig2 = G2i @ sig2
-            # h2 = G2i @ h2
+            # sig1 = matmul(G1i, sig2 + phi)
+            # h1 = matmul(G1i, h2 + a)
+            # sig2 = matmul(G2i, sig2)
+            # h2 = matmul(G2i, h2)
 
             sig1_i = G1i @ (sig2_i + phi_i)
 
