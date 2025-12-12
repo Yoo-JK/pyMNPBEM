@@ -13,6 +13,12 @@ Key equations:
 - Eq. (19): Surface charge solution
 - Eq. (20): Surface current solution
 - Eq. (21-22): BEM matrix definitions
+
+Note
+----
+For small particles (kR << 1), BEMStat is recommended as it provides
+more numerically stable results in the quasistatic regime. BEMRet is
+designed for larger particles where retardation effects are significant.
 """
 
 import numpy as np
@@ -430,7 +436,7 @@ class BEMRet(BEMBase):
             alpha_i = alpha[:, :, i_pol]  # (n, 3)
             De_i = De[:, i_pol]    # (n,)
 
-            # Modify alpha and De (MATLAB lines 31-34)
+            # Modify alpha and De (MATLAB bemret mldivide.m lines 31-34)
             # alpha = alpha - matmul(Sigma1, a) + i*k * outer(nvec, matmul(L1, phi))
             # De = De - matmul(Sigma1, matmul(L1, phi)) + i*k * inner(nvec, matmul(L1, a))
 
@@ -445,6 +451,8 @@ class BEMRet(BEMBase):
             # outer(nvec, L1_phi) = nvec * L1_phi
             outer_nvec_L1phi = nvec * L1_phi[:, np.newaxis]  # (n, 3)
 
+            # Original MATLAB equations without k-scaling
+            # alpha = alpha - matmul(Sigma1, a) + i*k * outer(nvec, matmul(L1, phi))
             alpha_mod = alpha_i - Sigma1_a + 1j * k * outer_nvec_L1phi  # (n, 3)
 
             # matmul(L1, a): for each vector component
@@ -458,6 +466,7 @@ class BEMRet(BEMBase):
             # matmul(Sigma1, matmul(L1, phi))
             Sigma1_L1_phi = Sigma1 @ L1_phi  # (n,)
 
+            # Original MATLAB: De = De - matmul(Sigma1, matmul(L1, phi)) + i*k * inner(nvec, matmul(L1, a))
             De_mod = De_i - Sigma1_L1_phi + 1j * k * inner_nvec_L1a  # (n,)
 
             # Eq. (19): sig2 = matmul(Sigmai, De + i*k * inner(nvec, matmul(L1-L2, matmul(Deltai, alpha))))

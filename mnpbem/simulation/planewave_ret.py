@@ -600,7 +600,8 @@ class PlaneWaveRetExcitation:
             # Compute vector potential for each polarization
             for i in range(n_pol):
                 # Phase factor: exp(i*k*r) / (i*k0)
-                # Note: divide by (i*k0), not (i*k) - this is the MATLAB convention
+                # Vector potential in Lorenz gauge: A = E/(iω) = E/(ik0*c)
+                # In natural units (c=1): A = E/(ik0)
                 phase = np.exp(1j * k * (self.pos[ind] @ dir[i])) / (1j * k0)
 
                 # Vector potential: A = phase * pol
