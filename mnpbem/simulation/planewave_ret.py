@@ -176,6 +176,12 @@ class PlaneWaveRet:
         ext : ndarray
             Extinction cross section for each polarization
         """
+        # Try full far-field calculation from sig2 and h2
+        try:
+            return self._farfield_extinction(sig)
+        except Exception:
+            pass
+
         # If SpectrumRet is available, use full far-field calculation
         if self._spec is not None:
             try:
@@ -190,6 +196,85 @@ class PlaneWaveRet:
 
         # Simple dipole-based extinction (like quasistatic)
         return self._simple_extinction(sig)
+
+    def _farfield_extinction(self, sig):
+        """
+        Compute extinction using far-field from charges and currents.
+
+        Based on MATLAB spectrumret/farfield.m and Garcia de Abajo, RMP 82, 209 (2010), Eq. (50).
+
+        E_ff = i*k0 * (phase @ h2) - i*k * outer(dir, phase @ sig2)
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with sig2 and h2
+
+        Returns
+        -------
+        ext : ndarray
+            Extinction cross section
+        """
+        # Get particle geometry
+        p = sig.p
+        pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+        area = p.area if hasattr(p, 'area') else p.pc.area
+        n_faces = len(pos)
+
+        # Get surface charges and currents
+        sig2 = sig.get('sig2')
+        h2 = sig.get('h2')
+
+        if sig2 is None or h2 is None:
+            raise ValueError("Need sig2 and h2 for far-field extinction")
+
+        # Ensure correct shapes
+        if sig2.ndim == 1:
+            sig2 = sig2[:, np.newaxis]
+        if h2.ndim == 2:
+            h2 = h2[:, :, np.newaxis]
+
+        n_pol = sig2.shape[1]
+
+        # Get wavenumbers
+        eps_result = p.eps[self.medium - 1](sig.enei)
+        if isinstance(eps_result, tuple):
+            eps_med, k = eps_result
+        else:
+            eps_med = eps_result
+            k = 2 * np.pi * np.sqrt(eps_med) / sig.enei
+
+        k0 = 2 * np.pi / sig.enei
+
+        # Compute extinction for each polarization
+        ext = np.zeros(n_pol)
+
+        for i_pol in range(min(self.n_pol, n_pol)):
+            dir_i = self.dir[i_pol]  # Propagation direction
+            pol_i = self.pol[i_pol]  # Polarization
+
+            # Phase factor: exp(-i*k*dir.pos) * area
+            # For forward scattering (observation in dir direction)
+            phase = np.exp(-1j * k * (pos @ dir_i)) * area  # (n_faces,)
+
+            # Far-field electric field contributions:
+            # E_ff = i*k0 * sum(phase * h2) - i*k * dir * sum(phase * sig2)
+
+            # Current contribution: i*k0 * phase @ h2
+            E_h = 1j * k0 * np.sum(phase[:, np.newaxis] * h2[:, :, i_pol], axis=0)  # (3,)
+
+            # Charge contribution: -i*k * dir * (phase @ sig2)
+            phase_sig = np.sum(phase * sig2[:, i_pol])  # scalar
+            E_sig = -1j * k * dir_i * phase_sig  # (3,)
+
+            # Total forward-scattered field
+            E_forward = E_h + E_sig
+
+            # Optical theorem: ext = 4*pi/k * Im(pol* . E_forward)
+            pol_dot_E = np.vdot(pol_i, E_forward)
+            ext[i_pol] = 4 * np.pi / k * np.imag(pol_dot_E)
+
+        return np.real(ext)
 
     def _simple_extinction(self, sig):
         """
